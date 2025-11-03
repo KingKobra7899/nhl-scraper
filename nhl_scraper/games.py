@@ -1,6 +1,6 @@
 import requests
 import pandas as pd
-import datetime
+import numpy as np
 
 
 def str_to_float(time_str: str) -> float:
@@ -65,7 +65,6 @@ def getPbpData(gameid: str):
             "details.committedByPlayerId",
             "details.drawnByPlayerId",
             "details.blockingPlayerId",
-            "details.servedByPlayerId",
         ]
     ]
 
@@ -85,7 +84,6 @@ def getPbpData(gameid: str):
             "details.committedByPlayerId": "committedByPlayerId",
             "details.drawnByPlayerId": "drawnByPlayerId",
             "details.blockingPlayerId": "blockingPlayerId",
-            "details.servedByPlayerId": "servedByPlayerId",
         }
     )
     shots = shots[
@@ -135,12 +133,19 @@ def getPbpData(gameid: str):
     )
 
     shots["isHome"] = shots["teamId"] == home
-    shooting_right = (shots["isHome"] & shots["homeTeamDefendingSide"] == "left") | (
-        ~shots["isHome"] & shots["homeTeamDefendingSide"] == "right"
+    shooting_right = np.where(
+        shots["isHome"],
+        shots["homeTeamDefendingSide"]
+        == "left",  # home team shoots right if defending left
+        shots["homeTeamDefendingSide"]
+        == "right",  # away team shoots right if home defends right
     )
+    shots["shootingRight"] = shooting_right
+    shots["xCoord"] = np.where(shooting_right, shots["xCoord"], -shots["xCoord"])
+    shots["yCoord"] = np.where(shooting_right, shots["yCoord"], -shots["yCoord"])
 
-    shots["xCoord"] = shots["xCoord"] * -1 * ~shooting_right
-    shots["yCoord"] = shots["yCoord"] * -1 * ~shooting_right
+    shots["dist"] = np.sqrt((shots["xCoord"] - 89) ** 2 + shots["yCoord"] ** 2)
+    shots["angle"] = np.sin(np.arctan2(shots["xCoord"] - 89, shots["yCoord"]))
     return {
         "venue": venue,
         "homeTeamId": home,
