@@ -324,25 +324,28 @@ def plot_game_shot_density(game_id, mode='both', sigma=10):
     density2 = gaussian_filter(H2.T, sigma=sigma * 3)
     diff = density1 - density2
     vmax = max(density1.max(), density2.max())
-
+    vmin = 0
     if mode == 'both':
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-        ax1.imshow(density1, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='Blues', vmin=0, vmax=vmax)
-        ax1.set_title(f'{team1_tricode} Shot Density', fontsize=14)
-        ax1.set_xlabel('X Coord')
-        ax1.set_ylabel('Y Coord')
-        draw_rink_features(ax1, xmin, xmax, ymin, ymax, color='black', alpha=0.5, linewidth=1.5)
-
-        ax2.imshow(density2, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='Reds', vmin=0, vmax=vmax)
-        ax2.set_title(f'{team2_tricode} Shot Density', fontsize=14)
-        ax2.set_xlabel('X Coord')
-        ax2.set_ylabel('Y Coord')
-        draw_rink_features(ax2, xmin, xmax, ymin, ymax, color='black', alpha=0.5, linewidth=1.5)
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+            fig.set_dpi(200)
+            ax1.imshow(density1, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='Blues', vmin=0, vmax=vmax)
+            ax1.contourf(density1, levels=np.linspace(0, vmax, 30), extent=[xmin, xmax, ymin, ymax], alpha=0.6, cmap='Blues', vmin=0, vmax=vmax)
+            ax1.set_title(f'{team1_tricode} Shot Density', fontsize=14)
+            ax1.set_xlabel('X Coord')
+            ax1.set_ylabel('Y Coord')
+            draw_rink_features(ax1, xmin, xmax, ymin, ymax, color='black', alpha=0.5, linewidth=1.5)
+            ax2.imshow(density2, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='Reds', vmin=0, vmax=vmax)
+            ax2.contourf(density2, levels=np.linspace(0, vmax, 30), extent=[xmin, xmax, ymin, ymax], alpha=0.6, cmap='Reds', vmin=0, vmax=vmax)
+            ax2.set_title(f'{team2_tricode} Shot Density', fontsize=14)
+            ax2.set_xlabel('X Coord')
+            ax2.set_ylabel('Y Coord')
+            draw_rink_features(ax2, xmin, xmax, ymin, ymax, color='black', alpha=0.5, linewidth=1.5)
 
     elif mode == 'diff':
         fig, ax = plt.subplots(1, 1, figsize=(10, 8.5))
+        fig.set_dpi(200)
         im = ax.imshow(diff, extent=[xmin, xmax, ymin, ymax], origin='lower', cmap='RdBu', vmin=-diff.max(), vmax=diff.max())
-
+        ax.contourf(diff, levels=np.linspace(diff.min(), diff.max(), 30), linewidths=0.5, extent=[xmin, xmax, ymin, ymax], alpha=0.6, cmap='RdBu', vmin=-diff.max(), vmax=diff.max())
 
         draw_rink_features(ax, xmin, xmax, ymin, ymax, color='black', alpha=0.5, linewidth=1.5)
 
