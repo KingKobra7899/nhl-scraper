@@ -17,7 +17,10 @@ classifiers = [
 ]
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
-
+dependencies = [
+  "requests",
+  "pandas",
+]
 [project.urls]
 Homepage = "https://github.com/KingKobra7899/nhl-scraper"
 Issues = "https://github.com/KingKobra7899/nhl-scraper/issues"
