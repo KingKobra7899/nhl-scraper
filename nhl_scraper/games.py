@@ -34,6 +34,11 @@ def getPbpData(gameid: str):
     away = data["awayTeam"]["id"]
 
     plays = pd.json_normalize(data["plays"])
+    plays["timeInPeriod"] = (
+        plays["timeInPeriod"].apply(str_to_float)
+        + (plays["periodDescriptor.number"] - 1) * 20
+    )
+    plays["timeRemaining"] = plays["timeRemaining"].apply(str_to_float)
     shot_mask = plays["typeDescKey"].isin(["goal", "shot-on-goal", "missed-shot"])
     shots = plays[shot_mask]
     plays = plays[~shot_mask]
@@ -83,15 +88,63 @@ def getPbpData(gameid: str):
             "details.servedByPlayerId": "servedByPlayerId",
         }
     )
-    plays["timeInPeriod"] = (
-        plays["timeInPeriod"].apply(str_to_float) + (plays["period"] - 1) * 20
+    shots = shots[
+        [
+            "timeInPeriod",
+            "timeRemaining",
+            "situationCode",
+            "typeDescKey",
+            "homeTeamDefendingSide",
+            "periodDescriptor.number",
+            "periodDescriptor.periodType",
+            "details.shootingPlayerId",
+            "details.awaySOG",
+            "details.homeSOG",
+            "details.awayScore",
+            "details.homeScore",
+            "details.xCoord",
+            "details.yCoord",
+            "details.zoneCode",
+            "details.eventOwnerTeamId",
+            "details.goalieInNetId",
+            "details.shotType",
+            "details.scoringPlayerId",
+            "details.assist1PlayerId",
+            "details.assist2PlayerId",
+        ]
+    ]
+    shots = shots.rename(
+        columns={
+            "details.shootingPlayerId": "shootingPlayerId",
+            "details.scoringPlayerId": "scoringPlayerId",
+            "details.awaySOG": "awaySOG",
+            "details.homeSOG": "homeSOG",
+            "details.awayScore": "awayScore",
+            "details.homeScore": "homeScore",
+            "details.xCoord": "xCoord",
+            "details.yCoord": "yCoord",
+            "details.zoneCode": "zoneCode",
+            "details.eventOwnerTeamId": "teamId",
+            "details.goalieInNetId": "goalieId",
+            "details.shotType": "shotType",
+            "details.assist1PlayerId": "a1PlayerId",
+            "details.assist2PlayerId": "a2PlayerId",
+            "periodDescriptor.number": "period",
+            "periodDescriptor.periodType": "periodType",
+        }
     )
-    plays["timeRemaining"] = plays["timeRemaining"].apply(str_to_float)
 
+    shots["isHome"] = shots["teamId"] == home
+    shooting_right = (shots["isHome"] & shots["homeTeamDefendingSide"] == "left") | (
+        ~shots["isHome"] & shots["homeTeamDefendingSide"] == "right"
+    )
+
+    shots["xCoord"] = shots["xCoord"] * -1 * ~shooting_right
+    shots["yCoord"] = shots["yCoord"] * -1 * ~shooting_right
     return {
         "venue": venue,
         "homeTeamId": home,
         "awayTeamId": away,
         "plays": plays,
-        "shots": shots,
+        "shots": shots[shots["periodType"] != "SO"],
     }
