@@ -145,7 +145,7 @@ def getPbpData(gameid: str):
     shots["yCoord"] = np.where(shooting_right, shots["yCoord"], -shots["yCoord"])
 
     shots["dist"] = np.sqrt((shots["xCoord"] - 89) ** 2 + shots["yCoord"] ** 2)
-    shots["angle"] = np.sin(np.arctan2(shots["xCoord"] - 89, shots["yCoord"]))
+    shots["angle"] = np.arctan2(shots["xCoord"] - 89, shots["yCoord"])
     return {
         "venue": venue,
         "homeTeamId": home,
