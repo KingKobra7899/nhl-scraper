@@ -1,9 +1,11 @@
+from cmd import IDENTCHARS
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from scipy.ndimage import gaussian_filter
 import requests
 from typing import List
+from tqdm import tqdm
 
 
 def str_to_float(time_str: str) -> float:
@@ -46,30 +48,36 @@ def getPbpData(gameid: str):
     shots = plays[shot_mask]
     plays = plays[~shot_mask]
 
-    plays = plays[
-        [
-            "timeInPeriod",
-            "typeDescKey",
-            "timeRemaining",
-            "situationCode",
-            "homeTeamDefendingSide",
-            "periodDescriptor.number",
-            "details.eventOwnerTeamId",
-            "details.playerId",
-            "details.losingPlayerId",
-            "details.winningPlayerId",
-            "details.xCoord",
-            "details.yCoord",
-            "details.zoneCode",
-            "details.playerId",
-            "details.hittingPlayerId",
-            "details.hitteePlayerId",
-            "details.duration",
-            "details.committedByPlayerId",
-            "details.drawnByPlayerId",
-            "details.blockingPlayerId",
-        ]
+    # Define the columns we want for plays
+    plays_columns = [
+        "timeInPeriod",
+        "typeDescKey",
+        "timeRemaining",
+        "situationCode",
+        "homeTeamDefendingSide",
+        "periodDescriptor.number",
+        "details.eventOwnerTeamId",
+        "details.playerId",
+        "details.losingPlayerId",
+        "details.winningPlayerId",
+        "details.xCoord",
+        "details.yCoord",
+        "details.zoneCode",
+        "details.hittingPlayerId",
+        "details.hitteePlayerId",
+        "details.duration",
+        "details.committedByPlayerId",
+        "details.drawnByPlayerId",
+        "details.blockingPlayerId",
     ]
+
+    # Add missing columns with NaN
+    for col in plays_columns:
+        if col not in plays.columns:
+            plays[col] = np.nan
+
+    # Select and reorder columns
+    plays = plays[plays_columns]
 
     plays = plays.rename(
         columns={
@@ -89,31 +97,40 @@ def getPbpData(gameid: str):
             "details.blockingPlayerId": "blockingPlayerId",
         }
     )
-    shots = shots[
-        [
-            "timeInPeriod",
-            "timeRemaining",
-            "situationCode",
-            "typeDescKey",
-            "homeTeamDefendingSide",
-            "periodDescriptor.number",
-            "periodDescriptor.periodType",
-            "details.shootingPlayerId",
-            "details.awaySOG",
-            "details.homeSOG",
-            "details.awayScore",
-            "details.homeScore",
-            "details.xCoord",
-            "details.yCoord",
-            "details.zoneCode",
-            "details.eventOwnerTeamId",
-            "details.goalieInNetId",
-            "details.shotType",
-            "details.scoringPlayerId",
-            "details.assist1PlayerId",
-            "details.assist2PlayerId",
-        ]
+
+    # Define the columns we want for shots
+    shots_columns = [
+        "timeInPeriod",
+        "timeRemaining",
+        "situationCode",
+        "typeDescKey",
+        "homeTeamDefendingSide",
+        "periodDescriptor.number",
+        "periodDescriptor.periodType",
+        "details.shootingPlayerId",
+        "details.awaySOG",
+        "details.homeSOG",
+        "details.awayScore",
+        "details.homeScore",
+        "details.xCoord",
+        "details.yCoord",
+        "details.zoneCode",
+        "details.eventOwnerTeamId",
+        "details.goalieInNetId",
+        "details.shotType",
+        "details.scoringPlayerId",
+        "details.assist1PlayerId",
+        "details.assist2PlayerId",
     ]
+
+    # Add missing columns with NaN
+    for col in shots_columns:
+        if col not in shots.columns:
+            shots[col] = np.nan
+
+    # Select and reorder columns
+    shots = shots[shots_columns]
+
     shots = shots.rename(
         columns={
             "details.shootingPlayerId": "shootingPlayerId",
@@ -134,7 +151,6 @@ def getPbpData(gameid: str):
             "periodDescriptor.periodType": "periodType",
         }
     )
-
     shots["isHome"] = shots["teamId"] == home
     shooting_right = np.where(
         shots["isHome"],
@@ -183,7 +199,7 @@ def getTeamName(teamid: int):
         )
     except:
         print(url)
-        return None
+        return ("", "")
 
 
 def draw_rink_features(
@@ -481,9 +497,119 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
     plt.show()
 
 
+def plot_team_shot_density(df, id, mode="both", sigma=10):
+    team1_df = df[df["teamId"] == id]
+    team2_df = df[df["teamId"] != id]
+    # Get team names
+    team1_name, team1_tricode = getTeamName(id)
+
+    xmin, xmax = 0, 100
+    ymin, ymax = -44.5, 44.5
+    H1, xedges, yedges = np.histogram2d(
+        team1_df["xCoord"],
+        team1_df["yCoord"],
+        bins=[100 * 3, 89 * 3],
+        range=[[xmin, xmax], [ymin, ymax]],
+    )
+    H2, _, _ = np.histogram2d(
+        team2_df["xCoord"],
+        team2_df["yCoord"],
+        bins=[100 * 3, 89 * 3],
+        range=[[xmin, xmax], [ymin, ymax]],
+    )
+    density1 = gaussian_filter(H1.T, sigma=sigma * 3)
+    density2 = gaussian_filter(H2.T, sigma=sigma * 3)
+    diff = density1 - density2
+    vmax = max(density1.max(), density2.max())
+    vmin = 0
+    if mode == "both":
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        fig.set_dpi(200)
+        ax1.imshow(
+            density1,
+            extent=[xmin, xmax, ymin, ymax],
+            origin="lower",
+            cmap="Blues",
+            vmin=0,
+            vmax=vmax,
+        )
+        ax1.contourf(
+            density1,
+            levels=np.linspace(0, vmax, 30),
+            extent=[xmin, xmax, ymin, ymax],
+            alpha=0.6,
+            cmap="Blues",
+            vmin=0,
+            vmax=vmax,
+        )
+        ax1.set_title("Shot Density For", fontsize=14)
+        ax1.set_xlabel("")
+        ax1.set_ylabel("")
+        draw_rink_features(
+            ax1, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+        )
+        ax2.imshow(
+            density2,
+            extent=[xmin, xmax, ymin, ymax],
+            origin="lower",
+            cmap="Reds",
+            vmin=0,
+            vmax=vmax,
+        )
+        ax2.contourf(
+            density2,
+            levels=np.linspace(0, vmax, 30),
+            extent=[xmin, xmax, ymin, ymax],
+            alpha=0.6,
+            cmap="Reds",
+            vmin=0,
+            vmax=vmax,
+        )
+        ax2.set_title(f"Shot Density Against", fontsize=14)
+        ax2.set_xlabel("")
+        ax2.set_ylabel("")
+        draw_rink_features(
+            ax2, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+        )
+
+    elif mode == "diff":
+        fig, ax = plt.subplots(1, 1, figsize=(10, 8.5))
+        fig.set_dpi(200)
+        im = ax.imshow(
+            diff,
+            extent=[xmin, xmax, ymin, ymax],
+            origin="lower",
+            cmap="bwr_r",
+            vmin=-diff.max(),
+            vmax=diff.max(),
+        )
+        ax.contourf(
+            diff,
+            levels=np.linspace(diff.min(), diff.max(), 20),
+            extent=[xmin, xmax, ymin, ymax],
+            alpha=1.0,
+            cmap="bwr_r",
+            vmin=-diff.max(),
+            vmax=diff.max(),
+        )
+
+        draw_rink_features(
+            ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+        )
+
+        ax.set_title(f"{team1_tricode} Shot Differential", fontsize=14)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        cbar = plt.colorbar(im, ax=ax, orientation="vertical", shrink=0.75)
+        cbar.set_label(f"Good ← → Bad", rotation=270, labelpad=20)
+
+    plt.tight_layout()
+    plt.show()
+
+
 def scrapeGamesShots(games: List[str]) -> pd.DataFrame | pd.Series:
     shots = pd.DataFrame()
-    for game in games:
+    for game in tqdm(games):
         shots = pd.concat([shots, getPbpData(game)["shots"]])
     return shots
 
