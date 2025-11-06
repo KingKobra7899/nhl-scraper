@@ -1,4 +1,5 @@
-from cmd import IDENTCHARS
+from functools import lru_cache
+from pandas._libs.lib import fast_multiget
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -185,6 +186,7 @@ def getGameString(gameid: str):
     return f"{away_team} @ {home_team}"
 
 
+@lru_cache(32)
 def getTeamName(teamid: int):
     """
     recieves full nhl team name from that teams nhl api id
@@ -497,7 +499,7 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
     plt.show()
 
 
-def plot_team_shot_density(df, id, mode="both", sigma=10):
+def plot_team_shot_density(df, id, gp, mode="both", sigma=10):
     team1_df = df[df["teamId"] == id]
     team2_df = df[df["teamId"] != id]
     # Get team names
@@ -575,6 +577,8 @@ def plot_team_shot_density(df, id, mode="both", sigma=10):
     elif mode == "diff":
         fig, ax = plt.subplots(1, 1, figsize=(10, 8.5))
         fig.set_dpi(200)
+
+        diff /= gp
         im = ax.imshow(
             diff,
             extent=[xmin, xmax, ymin, ymax],
@@ -583,25 +587,30 @@ def plot_team_shot_density(df, id, mode="both", sigma=10):
             vmin=-diff.max(),
             vmax=diff.max(),
         )
-        ax.contourf(
-            diff,
-            levels=np.linspace(diff.min(), diff.max(), 20),
-            extent=[xmin, xmax, ymin, ymax],
-            alpha=1.0,
-            cmap="bwr_r",
-            vmin=-diff.max(),
-            vmax=diff.max(),
-        )
+        # ax.contourf(
+        #     diff,
+        #     levels=np.linspace(diff.min(), diff.max(), 20),
+        #     extent=[xmin, xmax, ymin, ymax],
+        #     alpha=1.0,
+        #     cmap="bwr_r",
+        #     vmin=-diff.max(),
+        #     vmax=diff.max(),
+        # )
 
         draw_rink_features(
             ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
         )
 
-        ax.set_title(f"{team1_tricode} Shot Differential", fontsize=14)
+        ax.set_title(
+            f"{team1_tricode} Fenwick Differential  (Per-Game Differential: {diff.sum():+.2f})",
+            fontsize=14,
+        )
         ax.set_xlabel("")
         ax.set_ylabel("")
         cbar = plt.colorbar(im, ax=ax, orientation="vertical", shrink=0.75)
         cbar.set_label(f"Good ← → Bad", rotation=270, labelpad=20)
+
+        return fig
 
     plt.tight_layout()
     plt.show()
@@ -610,7 +619,11 @@ def plot_team_shot_density(df, id, mode="both", sigma=10):
 def scrapeGamesShots(games: List[str]) -> pd.DataFrame | pd.Series:
     shots = pd.DataFrame()
     for game in tqdm(games):
-        shots = pd.concat([shots, getPbpData(game)["shots"]])
+        try:
+            shots = pd.concat([shots, getPbpData(game)["shots"]])
+        except Exception as e:
+            print(f"{game}, {e}")
+
     return shots
 
 
@@ -638,6 +651,7 @@ def getTeamSeasonGames(team: int, season: int) -> List[str]:
     url = f"https://api-web.nhle.com/v1/club-schedule-season/{getTeamName(team)[1]}/{season}"
     response = requests.get(url)
     if response.status_code != 200:
+        print(url)
         raise Exception(f"Failed to fetch game metadata: {response.status_code}")
 
     games_data = response.json()["games"]
@@ -645,3 +659,30 @@ def getTeamSeasonGames(team: int, season: int) -> List[str]:
     games_df = games_df[games_df["gameType"] == 2]
     games_df = games_df[games_df["gameState"] == "OFF"]
     return games_df["id"].to_list()
+
+
+def getPlayerGames(playerId: int) -> list[str]:
+    url = f"https://api-web.nhle.com/v1/player/{playerId}/game-log/20252026/2"
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(url)
+        raise Exception(f"Failed to fetch game metadata: {response.status_code}")
+
+    szn = response.json()["playerStatSeasons"]
+    games = []
+    for season in szn:
+        url = f"https://api-web.nhle.com/v1/player/{playerId}/game-log/{season['season']}/2"
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(url)
+            raise Exception(f"Failed to fetch game metadata: {response.status_code}")
+        log = response.json()["gameLog"]
+        for game in log:
+            games.append(
+                {
+                    "season": season["season"],
+                    "gameId": game["gameId"],
+                    "date": game["gameDate"],
+                }
+            )
+    return games
