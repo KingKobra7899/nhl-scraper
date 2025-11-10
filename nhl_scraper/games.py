@@ -371,15 +371,17 @@ def draw_rink_features(
         ax.add_patch(dot)
 
 
-def scrapeGamesShots(games: List[str]) -> pd.DataFrame | pd.Series:
+def scrapeGamesPbp(games: List[str]) -> dict[str, pd.DataFrame | pd.Series]:
     shots = pd.DataFrame()
+    plays = pd.DataFrame()
     for game in tqdm(games):
         try:
             shots = pd.concat([shots, getPbpData(game)["shots"]])
+            plays = pd.concat([plays, getPbpData(game)["plays"]])
         except Exception as e:
             print(f"{game}, {e}")
 
-    return shots
+    return {"shots": shots, "plays": plays}
 
 
 def getSeasonPlayedGames(season1: int, season2: int) -> List[str]:
@@ -468,10 +470,19 @@ def getPlayerPuckPossession(
     for _, row in df.iterrows():
         etype = row["typeDescKey"]
         zone = row.get("zoneCode", None)
-
+        team = row.get("teamId", None)
         for col in event_player[etype]:
             if col in row and pd.notna(row[col]):
                 pid = row[col]
-                records.append({"playerId": pid, "eventType": etype, "zoneCode": zone})
+                records.append(
+                    {
+                        "playerId": pid,
+                        "eventType": etype,
+                        "zoneCode": zone,
+                        "teamId": team,
+                    }
+                )
 
-    return pd.DataFrame(records, columns=["playerId", "eventType", "zoneCode"])
+    return pd.DataFrame(
+        records, columns=["playerId", "eventType", "zoneCode", "teamId"]
+    )
