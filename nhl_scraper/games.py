@@ -574,6 +574,8 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=10):
             ax2, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
         )
 
+        return fig
+
     elif mode == "diff":
         fig, ax = plt.subplots(1, 1, figsize=(10, 8.5))
         fig.set_dpi(200)
