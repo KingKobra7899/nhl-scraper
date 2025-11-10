@@ -68,6 +68,7 @@ def getPbpData(gameid: str):
         "details.committedByPlayerId",
         "details.drawnByPlayerId",
         "details.blockingPlayerId",
+        "details.shootingPlayerId",
     ]
 
     # Add missing columns with NaN
@@ -93,6 +94,7 @@ def getPbpData(gameid: str):
             "details.duration": "duration",
             "details.committedByPlayerId": "committedByPlayerId",
             "details.drawnByPlayerId": "drawnByPlayerId",
+            "details.shootingPlayerId": "shootingPlayerId",
             "details.blockingPlayerId": "blockingPlayerId",
         }
     )
@@ -400,6 +402,7 @@ def getSeasonPlayedGames(season1: int, season2: int) -> List[str]:
     return games
 
 
+# x in y
 def getTeamSeasonGames(team: int, season: int) -> List[str]:
     url = f"https://api-web.nhle.com/v1/club-schedule-season/{getTeamName(team)[1]}/{season}"
     response = requests.get(url)
@@ -439,3 +442,36 @@ def getPlayerGames(playerId: int) -> list[str]:
                 }
             )
     return games
+
+
+def getPlayerPuckPossession(
+    game_data: pd.DataFrame, shots: pd.DataFrame
+) -> pd.DataFrame:
+    # mapping: eventType -> columns holding playerId(s)
+    event_player = {
+        "hit": ["hiteePlayerId"],
+        "giveaway": ["playerId"],
+        "takeaway": ["playerId"],
+        "blocked-shot": ["shootingPlayerId"],
+        "penalty": ["drawnByPlayerId"],
+        "shot-on-goal": ["shootingPlayerId"],
+        "missed-shot": ["shootingPlayerId"],
+        "goal": ["scoringPlayerId", "a1PlayerId", "a2PlayerId"],
+    }
+
+    df = pd.concat([game_data, shots], ignore_index=True)
+
+    df = df[df["typeDescKey"].isin(event_player.keys())].copy()
+
+    records = []
+
+    for _, row in df.iterrows():
+        etype = row["typeDescKey"]
+        zone = row.get("zoneCode", None)
+
+        for col in event_player[etype]:
+            if col in row and pd.notna(row[col]):
+                pid = row[col]
+                records.append({"playerId": pid, "eventType": etype, "zoneCode": zone})
+
+    return pd.DataFrame(records, columns=["playerId", "eventType", "zoneCode"])
