@@ -491,29 +491,27 @@ def generateGameShifts(gameId):
     url = f"https://api.nhle.com/stats/rest/en/shiftcharts?cayenneExp=gameId={gameId}"
     r = requests.get(url)
     df = pd.DataFrame(r.json()["data"])
-
-    # Convert to absolute game time
+    df = df[df["detailCode"] == 0]
+    # Convert times to float minutes
     df["startTime"] = df.startTime.apply(str_to_float) + (df.period - 1) * 20
     df["endTime"] = df.endTime.apply(str_to_float) + (df.period - 1) * 20
 
-    # Create all unique stint boundaries
-    bounds = pd.unique(pd.concat([df.startTime, df.endTime]))
-    bounds.sort()
+    # Collect all unique time points
+    time_points = pd.unique(pd.concat([df.startTime, df.endTime]))
+    time_points.sort()
 
-    # Create stints DataFrame
-    stints = pd.DataFrame(
-        {"stintId": range(len(bounds) - 1), "start": bounds[:-1], "end": bounds[1:]}
-    )
+    # Create stints: each interval between consecutive time points
+    stints = pd.DataFrame({"start": time_points[:-1], "end": time_points[1:]})
     stints["duration"] = stints["end"] - stints["start"]
+    stints["stintId"] = stints.index
 
-    # Assign list of stintIds to each player shift
-    def overlapping_stints(row):
-        overlapping = stints[
+    # For each player, record which stints they are on ice
+    df["stintIds"] = df.apply(
+        lambda row: stints[
             (stints["start"] < row["endTime"]) & (stints["end"] > row["startTime"])
-        ]
-        return overlapping["stintId"].tolist()
-
-    df["stintIds"] = df.apply(overlapping_stints, axis=1)
+        ].stintId.tolist(),
+        axis=1,
+    )
 
     return df, stints
 
@@ -521,7 +519,7 @@ def generateGameShifts(gameId):
 def getSituation(situationCode: int | str, is_home: bool) -> str:
     h = str(situationCode)[1]
     a = str(situationCode)[2]
-    return f"{h}v{a}" if is_home else f"{a}v{h}"
+    return f"{a}v{h}" if is_home else f"{h}v{a}"
 
 
 def get_sit(code, is_home):
@@ -545,313 +543,382 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     home_team_id = int(pbp["homeTeamId"])
     away_team_id = int(pbp["awayTeamId"])
 
-    # Add player names
-    def resolve_name(pid):
-        row = player_shifts[player_shifts["playerId"] == pid]
-        if row.empty:
-            return str(pid)
-        r = row.iloc[0]
-        return f"{r['firstName']} {r['lastName']}"
-
-    # Build home/away stints (on-ice metrics)
-    def make_stints(df):
-        df = df.copy()
-        df["cf"] = 0
-        df["ca"] = 0
-        df["sogf"] = 0
-        df["soga"] = 0
-        df["gf"] = 0
-        df["ga"] = 0
-        df["toi"] = df["end"] - df["start"]
-        return df
-
-    home_stints = make_stints(stints)
-    away_stints = make_stints(stints)
-
-    # Build player boxscore (individual stats per situation)
-    all_players = sorted(player_shifts["playerId"].unique())
-    situations = ["ev", "pp", "pk"]
-    box_rows = [(pid, sit) for pid in all_players for sit in situations]
-    boxscore = pd.DataFrame(box_rows, columns=["playerId", "situation"])
-    boxscore["name"] = [resolve_name(pid) for pid, _ in box_rows]
-
-    for col in [
-        "goals",
-        "assist1",
-        "assist2",
-        "shot_attempts",
-        "sog",
-        "giveaways",
-        "takeaways",
-        "hits",
-        "shots_blocked",
-        "faceoffs_won",
-        "faceoffs_lost",
-        "penalties_committed",
-        "penalties_drawn",
-        "total_toi",
-        "onice_cf",
-        "onice_ca",
-        "onice_sogf",
-        "onice_soga",
-        "onice_gf",
-        "onice_ga",
-    ]:
-        boxscore[col] = 0.0
-
-    # Add situationCode to shots and plays based on timeInPeriod
-    # Match each event to the stint it occurred in
+    # Assign each shot to a stint
     shots["stint_idx"] = shots["timeInPeriod"].apply(
-        lambda t: stints[(stints["start"] <= t) & (t <= stints["end"])].index[0]
-        if len(stints[(stints["start"] <= t) & (t <= stints["end"])]) > 0
+        lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
+        if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
         else -1
     )
 
     plays["stint_idx"] = plays["timeInPeriod"].apply(
-        lambda t: stints[(stints["start"] <= t) & (t <= stints["end"])].index[0]
-        if len(stints[(stints["start"] <= t) & (t <= stints["end"])]) > 0
+        lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
+        if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
         else -1
     )
 
-    # Process each stint (on-ice metrics)
-    for idx, stint in stints.iterrows():
-        start, end = stint["start"], stint["end"]
-        stint_shots = shots[shots["stint_idx"] == idx]
-        stint_toi = end - start
+    # Prepare boxscore skeleton
+    all_players = player_shifts["playerId"].unique()
+    situations = ["ev", "pp", "pk"]
+    boxscore = pd.DataFrame(
+        [(pid, sit) for pid in all_players for sit in situations],
+        columns=["playerId", "situation"],
+    )
+    boxscore["name"] = boxscore["playerId"].map(
+        lambda pid: (
+            f"{player_shifts.loc[player_shifts['playerId'] == pid, 'firstName'].iloc[0]} "
+            f"{player_shifts.loc[player_shifts['playerId'] == pid, 'lastName'].iloc[0]}"
+        )
+        if not player_shifts.loc[player_shifts["playerId"] == pid].empty
+        else str(pid)
+    )
 
-        cf_home = stint_shots["isHome"].sum()
-        ca_home = (~stint_shots["isHome"]).sum()
+    stat_cols = [
+        "goals",
+        "a1",
+        "a2",
+        "corsi",
+        "fenwick",
+        "sog",
+        "giveaways",
+        "takeaways",
+        "hits_for",
+        "hits_taken",
+        "blocks",
+        "faceoffs_won",
+        "faceoffs_lost",
+        "penalties_taken",
+        "penalties_drawn",
+        "total_toi",
+        "ff",
+        "fa",
+        "sogf",
+        "soga",
+        "gf",
+        "ga",
+    ]
+    for col in stat_cols:
+        boxscore[col] = 0.0
+
+    # Explode player shifts by stintIds
+    player_stints = player_shifts[["playerId", "teamId", "stintIds"]].explode(
+        "stintIds"
+    )
+    player_stints = player_stints.merge(
+        stints, left_on="stintIds", right_index=True, how="left"
+    )
+    player_stints["toi"] = player_stints["end"] - player_stints["start"]
+
+    # Map situation from shots to stints
+    stint_sit = shots.groupby("stint_idx")["situationCode"].first()
+    player_stints["situationCode"] = player_stints["stintIds"].map(stint_sit)
+    player_stints["situation"] = player_stints.apply(
+        lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
+        if pd.notna(r["situationCode"])
+        else "ev",
+        axis=1,
+    )
+
+    # Compute stint-level metrics
+    stint_metrics = {}
+    for idx, stint in stints.iterrows():
+        stint_shots = shots[shots["stint_idx"] == idx]
+        if stint_shots.empty:
+            stint_metrics[idx] = {
+                "ff_home": 0,
+                "fa_home": 0,
+                "sogf_home": 0,
+                "soga_home": 0,
+                "gf_home": 0,
+                "ga_home": 0,
+            }
+            continue
+
+        cf_home = stint_shots[stint_shots["isHome"]].shape[0]
+        ca_home = stint_shots[~stint_shots["isHome"]].shape[0]
         sogf_home = stint_shots[
-            (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
-            & stint_shots["isHome"]
+            (stint_shots["isHome"])
+            & (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
         ].shape[0]
         soga_home = stint_shots[
-            (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
-            & (~stint_shots["isHome"])
+            (~stint_shots["isHome"])
+            & (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
         ].shape[0]
         gf_home = stint_shots[
-            (stint_shots["typeDescKey"] == "goal") & stint_shots["isHome"]
+            (stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
         ].shape[0]
         ga_home = stint_shots[
-            (stint_shots["typeDescKey"] == "goal") & (~stint_shots["isHome"])
+            (~stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
         ].shape[0]
 
-        # Fill stint stats
-        home_stints.loc[idx, ["cf", "ca", "sogf", "soga", "gf", "ga", "toi"]] = [
-            cf_home,
-            ca_home,
-            sogf_home,
-            soga_home,
-            gf_home,
-            ga_home,
-            stint_toi,
+        stint_metrics[idx] = {
+            "ff_home": cf_home,
+            "fa_home": ca_home,
+            "sogf_home": sogf_home,
+            "soga_home": soga_home,
+            "gf_home": gf_home,
+            "ga_home": ga_home,
+        }
+
+    stint_metrics = pd.DataFrame.from_dict(stint_metrics, orient="index")
+    player_stints = player_stints.merge(
+        stint_metrics, left_on="stintIds", right_index=True, how="left"
+    ).fillna(0)
+
+    # Assign correct metrics based on player team
+    def assign_metrics(row):
+        if row["teamId"] == home_team_id:
+            row["ff"], row["fa"] = row["ff_home"], row["fa_home"]
+            row["sogf"], row["soga"] = row["sogf_home"], row["soga_home"]
+            row["gf"], row["ga"] = row["gf_home"], row["ga_home"]
+        else:
+            row["ff"], row["fa"] = row["fa_home"], row["ff_home"]
+            row["sogf"], row["soga"] = row["soga_home"], row["sogf_home"]
+            row["gf"], row["ga"] = row["ga_home"], row["gf_home"]
+        return row
+
+    player_stints = player_stints.apply(assign_metrics, axis=1)
+    player_stints["total_toi"] = player_stints["toi"]
+
+    # Aggregate per player + situation
+    player_metrics = (
+        player_stints.groupby(["playerId", "situation"])[
+            ["ff", "fa", "sogf", "soga", "gf", "ga", "total_toi"]
         ]
-        away_stints.loc[idx, ["cf", "ca", "sogf", "soga", "gf", "ga", "toi"]] = [
-            ca_home,
-            cf_home,
-            soga_home,
-            sogf_home,
-            ga_home,
-            gf_home,
-            stint_toi,
-        ]
+        .sum()
+        .reset_index()
+    )
 
-        # Get situationCode from a shot in this stint if available
-        stint_situation = None
-        if not stint_shots.empty and "situationCode" in stint_shots.columns:
-            stint_situation = stint_shots.iloc[0]["situationCode"]
+    # Merge to boxscore
+    boxscore = boxscore.merge(
+        player_metrics, on=["playerId", "situation"], how="left", suffixes=("", "_agg")
+    )
+    for col in ["ff", "fa", "sogf", "soga", "gf", "ga", "total_toi"]:
+        boxscore[col] = boxscore[f"{col}_agg"].fillna(0)
+        boxscore.drop(columns=[f"{col}_agg"], inplace=True)
 
-        # Update on-ice metrics for players
-        home_players = player_shifts[
-            (player_shifts["teamId"] == home_team_id)
-            & (player_shifts["startTime"] <= end)
-            & (player_shifts["endTime"] >= start)
-        ]["playerId"].unique()
+    shots["situation"] = shots.apply(
+        lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
+        if pd.notna(r["situationCode"]) and pd.notna(r["teamId"])
+        else "ev",
+        axis=1,
+    )
 
-        away_players = player_shifts[
-            (player_shifts["teamId"] == away_team_id)
-            & (player_shifts["startTime"] <= end)
-            & (player_shifts["endTime"] >= start)
-        ]["playerId"].unique()
+    plays["situation"] = plays.apply(
+        lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
+        if pd.notna(r["situationCode"]) and pd.notna(r["teamId"])
+        else "ev",
+        axis=1,
+    )
 
-        if stint_situation:
-            sit_home = get_sit(stint_situation, True)
-            sit_away = get_sit(stint_situation, False)
+    # ===== SHOTS-BASED STATS =====
 
-            for pid in home_players:
-                mask = (boxscore["playerId"] == pid) & (
-                    boxscore["situation"] == sit_home
-                )
-                boxscore.loc[mask, "onice_cf"] += cf_home
-                boxscore.loc[mask, "onice_ca"] += ca_home
-                boxscore.loc[mask, "onice_sogf"] += sogf_home
-                boxscore.loc[mask, "onice_soga"] += soga_home
-                boxscore.loc[mask, "onice_gf"] += gf_home
-                boxscore.loc[mask, "onice_ga"] += ga_home
-                boxscore.loc[mask, "total_toi"] += stint_toi
+    # Goals (use scoringPlayerId)
+    goals = (
+        shots[shots["typeDescKey"] == "goal"]
+        .groupby(["scoringPlayerId", "situation"])
+        .size()
+        .reset_index(name="goals")
+    )
+    goals.rename(columns={"scoringPlayerId": "playerId"}, inplace=True)
 
-            for pid in away_players:
-                mask = (boxscore["playerId"] == pid) & (
-                    boxscore["situation"] == sit_away
-                )
-                boxscore.loc[mask, "onice_cf"] += ca_home
-                boxscore.loc[mask, "onice_ca"] += cf_home
-                boxscore.loc[mask, "onice_sogf"] += soga_home
-                boxscore.loc[mask, "onice_soga"] += sogf_home
-                boxscore.loc[mask, "onice_gf"] += ga_home
-                boxscore.loc[mask, "onice_ga"] += gf_home
-                boxscore.loc[mask, "total_toi"] += stint_toi
+    # Assist1
+    assist1 = (
+        shots[shots["typeDescKey"] == "goal"]
+        .dropna(subset=["a1PlayerId"])
+        .groupby(["a1PlayerId", "situation"])
+        .size()
+        .reset_index(name="a1")
+    )
+    assist1.rename(columns={"a1PlayerId": "playerId"}, inplace=True)
 
-    # Process shots for individual player stats
-    for _, s in shots.iterrows():
-        if "situationCode" not in s or pd.isna(s["situationCode"]):
-            continue
+    # Assist2
+    assist2 = (
+        shots[shots["typeDescKey"] == "goal"]
+        .dropna(subset=["a2PlayerId"])
+        .groupby(["a2PlayerId", "situation"])
+        .size()
+        .reset_index(name="a2")
+    )
+    assist2.rename(columns={"a2PlayerId": "playerId"}, inplace=True)
 
-        sit = get_sit(s["situationCode"], s["isHome"])
+    # Fenwick (SOG + missed + goals, excluding blocked)
+    fenwick_non_goal = (
+        shots[shots["typeDescKey"].isin(["shot-on-goal", "missed-shot"])]
+        .groupby(["shootingPlayerId", "situation"])
+        .size()
+        .reset_index(name="fenwick")
+    )
+    fenwick_non_goal.rename(columns={"shootingPlayerId": "playerId"}, inplace=True)
+    fenwick_goals = (
+        shots[shots["typeDescKey"] == "goal"]
+        .groupby(["scoringPlayerId", "situation"])
+        .size()
+        .reset_index(name="fenwick")
+    )
+    fenwick_goals.rename(columns={"scoringPlayerId": "playerId"}, inplace=True)
+    fenwick = (
+        pd.concat([fenwick_non_goal, fenwick_goals])
+        .groupby(["playerId", "situation"])["fenwick"]
+        .sum()
+        .reset_index()
+    )
 
-        # Goals
-        if s["typeDescKey"] == "goal" and pd.notna(s.get("scoringPlayerId")):
-            scorer = int(s["scoringPlayerId"])
-            mask = (boxscore["playerId"] == scorer) & (boxscore["situation"] == sit)
-            boxscore.loc[mask, "goals"] += 1
-            boxscore.loc[mask, "shot_attempts"] += 1
-            boxscore.loc[mask, "sog"] += 1
+    # Shots on goal (SOG + goals, excluding missed and blocked)
+    sog_shots = (
+        shots[shots["typeDescKey"] == "shot-on-goal"]
+        .groupby(["shootingPlayerId", "situation"])
+        .size()
+        .reset_index(name="sog")
+    )
+    sog_shots.rename(columns={"shootingPlayerId": "playerId"}, inplace=True)
+    sog_goals = (
+        shots[shots["typeDescKey"] == "goal"]
+        .groupby(["scoringPlayerId", "situation"])
+        .size()
+        .reset_index(name="sog")
+    )
+    sog_goals.rename(columns={"scoringPlayerId": "playerId"}, inplace=True)
+    sog = (
+        pd.concat([sog_shots, sog_goals])
+        .groupby(["playerId", "situation"])["sog"]
+        .sum()
+        .reset_index()
+    )
 
-            for a, col in zip(
-                [s.get("a1PlayerId"), s.get("a2PlayerId")], ["assist1", "assist2"]
-            ):
-                if pd.notna(a):
-                    a = int(a)
-                    mask = (boxscore["playerId"] == a) & (boxscore["situation"] == sit)
-                    boxscore.loc[mask, col] += 1
+    # ===== PLAYS-BASED STATS =====
 
-        # Non-goal shots
-        elif pd.notna(s.get("shootingPlayerId")):
-            shooter_id = int(s["shootingPlayerId"])
-            mask = (boxscore["playerId"] == shooter_id) & (boxscore["situation"] == sit)
-            boxscore.loc[mask, "shot_attempts"] += 1
-            if s["typeDescKey"] == "shot-on-goal":
-                boxscore.loc[mask, "sog"] += 1
+    # Blocked shots (as shooter - shots that got blocked)
+    shots_blocked_against = (
+        plays[plays["typeDescKey"] == "blocked-shot"]
+        .dropna(subset=["shootingPlayerId"])
+        .groupby(["shootingPlayerId", "situation"])
+        .size()
+        .reset_index(name="shots_blocked_against")
+    )
+    shots_blocked_against.rename(columns={"shootingPlayerId": "playerId"}, inplace=True)
 
-    # Process plays for remaining stats
-    for _, ev in plays.iterrows():
-        typ = ev["typeDescKey"]
+    # Corsi (Fenwick + blocked shots)
+    corsi = fenwick.copy()
+    corsi.rename(columns={"fenwick": "corsi"}, inplace=True)
+    corsi = corsi.merge(shots_blocked_against, on=["playerId", "situation"], how="left")
+    corsi["corsi"] = corsi["corsi"] + corsi["shots_blocked_against"].fillna(0)
+    corsi.drop(columns=["shots_blocked_against"], inplace=True)
 
-        # Determine situation from the stint this play occurred in
-        if ev["stint_idx"] == -1:
-            continue
+    # Giveaways
+    giveaways = (
+        plays[plays["typeDescKey"] == "giveaway"]
+        .groupby(["playerId", "situation"])
+        .size()
+        .reset_index(name="giveaways")
+    )
 
-        stint_plays = shots[shots["stint_idx"] == ev["stint_idx"]]
-        if stint_plays.empty or "situationCode" not in stint_plays.columns:
-            continue
+    # Takeaways
+    takeaways = (
+        plays[plays["typeDescKey"] == "takeaway"]
+        .groupby(["playerId", "situation"])
+        .size()
+        .reset_index(name="takeaways")
+    )
 
-        situation_code = stint_plays.iloc[0]["situationCode"]
+    # Hits (as hitter)
+    hits_for = (
+        plays[plays["typeDescKey"] == "hit"]
+        .dropna(subset=["hittingPlayerId"])
+        .groupby(["hittingPlayerId", "situation"])
+        .size()
+        .reset_index(name="hits_for")
+    )
+    hits_for.rename(columns={"hittingPlayerId": "playerId"}, inplace=True)
 
-        # Determine which team the player belongs to
-        pid = (
-            ev.get("playerId") or ev.get("hitterPlayerId") or ev.get("winningPlayerId")
+    # Hits taken (as hittee)
+    hits_taken = (
+        plays[plays["typeDescKey"] == "hit"]
+        .dropna(subset=["hitteePlayerId"])
+        .groupby(["hitteePlayerId", "situation"])
+        .size()
+        .reset_index(name="hits_taken")
+    )
+    hits_taken.rename(columns={"hitteePlayerId": "playerId"}, inplace=True)
+
+    # Shots blocked (as blocker)
+    shots_blocked_for = (
+        plays[plays["typeDescKey"] == "blocked-shot"]
+        .dropna(subset=["blockingPlayerId"])
+        .groupby(["blockingPlayerId", "situation"])
+        .size()
+        .reset_index(name="blocks")
+    )
+    shots_blocked_for.rename(columns={"blockingPlayerId": "playerId"}, inplace=True)
+
+    # Faceoffs won
+    faceoffs_won = (
+        plays[plays["typeDescKey"] == "faceoff"]
+        .dropna(subset=["winningPlayerId"])
+        .groupby(["winningPlayerId", "situation"])
+        .size()
+        .reset_index(name="faceoffs_won")
+    )
+    faceoffs_won.rename(columns={"winningPlayerId": "playerId"}, inplace=True)
+
+    # Faceoffs lost
+    faceoffs_lost = (
+        plays[plays["typeDescKey"] == "faceoff"]
+        .dropna(subset=["losingPlayerId"])
+        .groupby(["losingPlayerId", "situation"])
+        .size()
+        .reset_index(name="faceoffs_lost")
+    )
+    faceoffs_lost.rename(columns={"losingPlayerId": "playerId"}, inplace=True)
+
+    # Penalties taken
+    penalties_taken = (
+        plays[plays["typeDescKey"] == "penalty"]
+        .dropna(subset=["committedByPlayerId"])
+        .groupby(["committedByPlayerId", "situation"])
+        .size()
+        .reset_index(name="penalties_taken")
+    )
+    penalties_taken.rename(columns={"committedByPlayerId": "playerId"}, inplace=True)
+
+    # Penalties drawn
+    penalties_drawn = (
+        plays[plays["typeDescKey"] == "penalty"]
+        .dropna(subset=["drawnByPlayerId"])
+        .groupby(["drawnByPlayerId", "situation"])
+        .size()
+        .reset_index(name="penalties_drawn")
+    )
+    penalties_drawn.rename(columns={"drawnByPlayerId": "playerId"}, inplace=True)
+
+    # ===== MERGE ALL STATS INTO BOXSCORE =====
+
+    all_stats = [
+        goals,
+        assist1,
+        assist2,
+        fenwick,
+        sog,
+        corsi,
+        giveaways,
+        takeaways,
+        hits_for,
+        hits_taken,
+        shots_blocked_for,
+        faceoffs_won,
+        faceoffs_lost,
+        penalties_taken,
+        penalties_drawn,
+    ]
+
+    for df_stat in all_stats:
+        stat_col = [c for c in df_stat.columns if c not in ["playerId", "situation"]][0]
+        boxscore = boxscore.merge(
+            df_stat, on=["playerId", "situation"], how="left", suffixes=("", "_new")
         )
-        if pd.notna(pid):
-            pid = int(pid)
-            # Check if player is on home or away team
-            is_home = (
-                pid
-                in player_shifts[player_shifts["teamId"] == home_team_id][
-                    "playerId"
-                ].values
-            )
-            sit = get_sit(situation_code, is_home)
+        if f"{stat_col}_new" in boxscore.columns:
+            boxscore[stat_col] = boxscore[f"{stat_col}_new"].fillna(0)
+            boxscore.drop(columns=[f"{stat_col}_new"], inplace=True)
+        else:
+            boxscore[stat_col] = boxscore[stat_col].fillna(0)
 
-            if typ == "giveaway":
-                mask = (boxscore["playerId"] == pid) & (boxscore["situation"] == sit)
-                boxscore.loc[mask, "giveaways"] += 1
-
-            elif typ == "takeaway":
-                mask = (boxscore["playerId"] == pid) & (boxscore["situation"] == sit)
-                boxscore.loc[mask, "takeaways"] += 1
-
-            elif typ == "hit":
-                hitter = ev.get("hitterPlayerId")
-                if pd.notna(hitter):
-                    hitter = int(hitter)
-                    is_home_h = (
-                        hitter
-                        in player_shifts[player_shifts["teamId"] == home_team_id][
-                            "playerId"
-                        ].values
-                    )
-                    sit_h = get_sit(situation_code, is_home_h)
-                    mask_h = (boxscore["playerId"] == hitter) & (
-                        boxscore["situation"] == sit_h
-                    )
-                    boxscore.loc[mask_h, "hits"] += 1
-
-            elif typ == "faceoff":
-                winner = ev.get("winningPlayerId")
-                loser = ev.get("losingPlayerId")
-                if pd.notna(winner):
-                    winner = int(winner)
-                    is_home_w = (
-                        winner
-                        in player_shifts[player_shifts["teamId"] == home_team_id][
-                            "playerId"
-                        ].values
-                    )
-                    sit_w = get_sit(situation_code, is_home_w)
-                    boxscore.loc[
-                        (boxscore["playerId"] == winner)
-                        & (boxscore["situation"] == sit_w),
-                        "faceoffs_won",
-                    ] += 1
-                if pd.notna(loser):
-                    loser = int(loser)
-                    is_home_l = (
-                        loser
-                        in player_shifts[player_shifts["teamId"] == home_team_id][
-                            "playerId"
-                        ].values
-                    )
-                    sit_l = get_sit(situation_code, is_home_l)
-                    boxscore.loc[
-                        (boxscore["playerId"] == loser)
-                        & (boxscore["situation"] == sit_l),
-                        "faceoffs_lost",
-                    ] += 1
-
-            elif typ == "penalty":
-                comm = ev.get("commitedByPlayerId")
-                drawn = ev.get("drawnByPlayerId")
-                if pd.notna(comm):
-                    comm = int(comm)
-                    is_home_c = (
-                        comm
-                        in player_shifts[player_shifts["teamId"] == home_team_id][
-                            "playerId"
-                        ].values
-                    )
-                    sit_c = get_sit(situation_code, is_home_c)
-                    boxscore.loc[
-                        (boxscore["playerId"] == comm)
-                        & (boxscore["situation"] == sit_c),
-                        "penalties_committed",
-                    ] += 1
-                if pd.notna(drawn):
-                    drawn = int(drawn)
-                    is_home_d = (
-                        drawn
-                        in player_shifts[player_shifts["teamId"] == home_team_id][
-                            "playerId"
-                        ].values
-                    )
-                    sit_d = get_sit(situation_code, is_home_d)
-                    boxscore.loc[
-                        (boxscore["playerId"] == drawn)
-                        & (boxscore["situation"] == sit_d),
-                        "penalties_drawn",
-                    ] += 1
-
-    return {
-        "home_stints": home_stints,
-        "away_stints": away_stints,
-        "boxscore": boxscore,
-    }
+    return {"home_stints": stints, "away_stints": stints, "boxscore": boxscore}
