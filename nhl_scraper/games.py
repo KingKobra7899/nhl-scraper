@@ -155,10 +155,8 @@ def getPbpData(gameid: str | int):
     shots["isHome"] = shots["teamId"] == home
     shooting_right = np.where(
         shots["isHome"],
-        shots["homeTeamDefendingSide"]
-        == "left",  # home team shoots right if defending left
-        shots["homeTeamDefendingSide"]
-        == "right",  # away team shoots right if home defends right
+        shots["homeTeamDefendingSide"] == "left",
+        shots["homeTeamDefendingSide"] == "right",
     )
     shots["shootingRight"] = shooting_right
     shots["xCoord"] = np.where(shooting_right, shots["xCoord"], -shots["xCoord"])
