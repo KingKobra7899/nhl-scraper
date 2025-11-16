@@ -167,6 +167,8 @@ def getPbpData(gameid: str | int):
 
     shots["venue"] = venue
     plays["venue"] = venue
+    plays["game"] = gameid
+    shots["game"] = gameid
     return {
         "venue": venue,
         "homeTeamId": home,
@@ -541,26 +543,29 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     home_team_id = int(pbp["homeTeamId"])
     away_team_id = int(pbp["awayTeamId"])
 
-    # Assign each shot to a stint
+    # Assign stints to shots
     shots["stint_idx"] = shots["timeInPeriod"].apply(
         lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
         if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
         else -1
     )
 
+    # Assign stints to plays
     plays["stint_idx"] = plays["timeInPeriod"].apply(
         lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
         if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
         else -1
     )
 
-    # Prepare boxscore skeleton
+    # BOXSCORE SKELETON
     all_players = player_shifts["playerId"].unique()
     situations = ["ev", "pp", "pk"]
+
     boxscore = pd.DataFrame(
         [(pid, sit) for pid in all_players for sit in situations],
         columns=["playerId", "situation"],
     )
+
     boxscore["name"] = boxscore["playerId"].map(
         lambda pid: (
             f"{player_shifts.loc[player_shifts['playerId'] == pid, 'firstName'].iloc[0]} "
@@ -597,7 +602,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     for col in stat_cols:
         boxscore[col] = 0.0
 
-    # Explode player shifts by stintIds
+    # EXPLODE SHIFTS TO STINTS
     player_stints = player_shifts[["playerId", "teamId", "stintIds"]].explode(
         "stintIds"
     )
@@ -606,7 +611,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     )
     player_stints["toi"] = player_stints["end"] - player_stints["start"]
 
-    # Map situation from shots to stints
+    # MAP SITUATION
     stint_sit = shots.groupby("stint_idx")["situationCode"].first()
     player_stints["situationCode"] = player_stints["stintIds"].map(stint_sit)
     player_stints["situation"] = player_stints.apply(
@@ -616,10 +621,11 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         axis=1,
     )
 
-    # Compute stint-level metrics
+    # BUILD STINT METRICS
     stint_metrics = {}
     for idx, stint in stints.iterrows():
         stint_shots = shots[shots["stint_idx"] == idx]
+
         if stint_shots.empty:
             stint_metrics[idx] = {
                 "ff_home": 0,
@@ -633,17 +639,21 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
 
         cf_home = stint_shots[stint_shots["isHome"]].shape[0]
         ca_home = stint_shots[~stint_shots["isHome"]].shape[0]
+
         sogf_home = stint_shots[
             (stint_shots["isHome"])
             & (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
         ].shape[0]
+
         soga_home = stint_shots[
             (~stint_shots["isHome"])
             & (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
         ].shape[0]
+
         gf_home = stint_shots[
             (stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
         ].shape[0]
+
         ga_home = stint_shots[
             (~stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
         ].shape[0]
@@ -658,26 +668,27 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         }
 
     stint_metrics = pd.DataFrame.from_dict(stint_metrics, orient="index")
+
     player_stints = player_stints.merge(
         stint_metrics, left_on="stintIds", right_index=True, how="left"
     ).fillna(0)
 
-    # Assign correct metrics based on player team
-    def assign_metrics(row):
-        if row["teamId"] == home_team_id:
-            row["ff"], row["fa"] = row["ff_home"], row["fa_home"]
-            row["sogf"], row["soga"] = row["sogf_home"], row["soga_home"]
-            row["gf"], row["ga"] = row["gf_home"], row["ga_home"]
+    # ASSIGN TEAM-RELATIVE METRICS
+    def assign_metrics(r):
+        if r["teamId"] == home_team_id:
+            r["ff"], r["fa"] = r["ff_home"], r["fa_home"]
+            r["sogf"], r["soga"] = r["sogf_home"], r["soga_home"]
+            r["gf"], r["ga"] = r["gf_home"], r["ga_home"]
         else:
-            row["ff"], row["fa"] = row["fa_home"], row["ff_home"]
-            row["sogf"], row["soga"] = row["soga_home"], row["sogf_home"]
-            row["gf"], row["ga"] = row["ga_home"], row["gf_home"]
-        return row
+            r["ff"], r["fa"] = r["fa_home"], r["ff_home"]
+            r["sogf"], r["soga"] = r["soga_home"], r["sogf_home"]
+            r["gf"], r["ga"] = r["ga_home"], r["gf_home"]
+        return r
 
     player_stints = player_stints.apply(assign_metrics, axis=1)
     player_stints["total_toi"] = player_stints["toi"]
 
-    # Aggregate per player + situation
+    # AGGREGATE PER PLAYER X SITUATION
     player_metrics = (
         player_stints.groupby(["playerId", "situation"])[
             ["ff", "fa", "sogf", "soga", "gf", "ga", "total_toi"]
@@ -686,7 +697,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .reset_index()
     )
 
-    # Merge to boxscore
+    # MERGE INTO BOXSCORE
     boxscore = boxscore.merge(
         player_metrics, on=["playerId", "situation"], how="left", suffixes=("", "_agg")
     )
@@ -694,6 +705,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         boxscore[col] = boxscore[f"{col}_agg"].fillna(0)
         boxscore.drop(columns=[f"{col}_agg"], inplace=True)
 
+    # SITUATION MAPPING FOR SHOTS/PLAYS
     shots["situation"] = shots.apply(
         lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
         if pd.notna(r["situationCode"]) and pd.notna(r["teamId"])
@@ -708,99 +720,105 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         axis=1,
     )
 
-    # ===== SHOTS-BASED STATS =====
+    # =========================
+    # SHOTS-BASED STATS
+    # =========================
 
-    # Goals (use scoringPlayerId)
+    # Goals
     goals = (
         shots[shots["typeDescKey"] == "goal"]
         .groupby(["scoringPlayerId", "situation"])
         .size()
         .reset_index(name="goals")
+        .rename(columns={"scoringPlayerId": "playerId"})
     )
-    goals.rename(columns={"scoringPlayerId": "playerId"}, inplace=True)
 
-    # Assist1
+    # First assists
     assist1 = (
         shots[shots["typeDescKey"] == "goal"]
         .dropna(subset=["a1PlayerId"])
         .groupby(["a1PlayerId", "situation"])
         .size()
         .reset_index(name="a1")
+        .rename(columns={"a1PlayerId": "playerId"})
     )
-    assist1.rename(columns={"a1PlayerId": "playerId"}, inplace=True)
 
-    # Assist2
+    # Second assists
     assist2 = (
         shots[shots["typeDescKey"] == "goal"]
         .dropna(subset=["a2PlayerId"])
         .groupby(["a2PlayerId", "situation"])
         .size()
         .reset_index(name="a2")
+        .rename(columns={"a2PlayerId": "playerId"})
     )
-    assist2.rename(columns={"a2PlayerId": "playerId"}, inplace=True)
 
-    # Fenwick (SOG + missed + goals, excluding blocked)
+    # Fenwick (non-blocked attempts)
     fenwick_non_goal = (
         shots[shots["typeDescKey"].isin(["shot-on-goal", "missed-shot"])]
         .groupby(["shootingPlayerId", "situation"])
         .size()
         .reset_index(name="fenwick")
+        .rename(columns={"shootingPlayerId": "playerId"})
     )
-    fenwick_non_goal.rename(columns={"shootingPlayerId": "playerId"}, inplace=True)
+
     fenwick_goals = (
         shots[shots["typeDescKey"] == "goal"]
         .groupby(["scoringPlayerId", "situation"])
         .size()
         .reset_index(name="fenwick")
-    )
-    fenwick_goals.rename(columns={"scoringPlayerId": "playerId"}, inplace=True)
-    fenwick = (
-        pd.concat([fenwick_non_goal, fenwick_goals])
-        .groupby(["playerId", "situation"])["fenwick"]
-        .sum()
-        .reset_index()
+        .rename(columns={"scoringPlayerId": "playerId"})
     )
 
-    # Shots on goal (SOG + goals, excluding missed and blocked)
+    fenwick = (
+        pd.concat([fenwick_non_goal, fenwick_goals], ignore_index=True)
+        .groupby(["playerId", "situation"], as_index=False)["fenwick"]
+        .sum()
+    )
+
+    # Shots on goal (SOG)
     sog_shots = (
         shots[shots["typeDescKey"] == "shot-on-goal"]
         .groupby(["shootingPlayerId", "situation"])
         .size()
         .reset_index(name="sog")
+        .rename(columns={"shootingPlayerId": "playerId"})
     )
-    sog_shots.rename(columns={"shootingPlayerId": "playerId"}, inplace=True)
+
     sog_goals = (
         shots[shots["typeDescKey"] == "goal"]
         .groupby(["scoringPlayerId", "situation"])
         .size()
         .reset_index(name="sog")
+        .rename(columns={"scoringPlayerId": "playerId"})
     )
-    sog_goals.rename(columns={"scoringPlayerId": "playerId"}, inplace=True)
+
     sog = (
-        pd.concat([sog_shots, sog_goals])
-        .groupby(["playerId", "situation"])["sog"]
+        pd.concat([sog_shots, sog_goals], ignore_index=True)
+        .groupby(["playerId", "situation"], as_index=False)["sog"]
         .sum()
-        .reset_index()
     )
 
-    # ===== PLAYS-BASED STATS =====
+    # =========================
+    # PLAYS-BASED STATS
+    # =========================
 
-    # Blocked shots (as shooter - shots that got blocked)
+    # Shots blocked against (shooter)
     shots_blocked_against = (
         plays[plays["typeDescKey"] == "blocked-shot"]
         .dropna(subset=["shootingPlayerId"])
         .groupby(["shootingPlayerId", "situation"])
         .size()
         .reset_index(name="shots_blocked_against")
+        .rename(columns={"shootingPlayerId": "playerId"})
     )
-    shots_blocked_against.rename(columns={"shootingPlayerId": "playerId"}, inplace=True)
 
-    # Corsi (Fenwick + blocked shots)
-    corsi = fenwick.copy()
-    corsi.rename(columns={"fenwick": "corsi"}, inplace=True)
-    corsi = corsi.merge(shots_blocked_against, on=["playerId", "situation"], how="left")
-    corsi["corsi"] = corsi["corsi"] + corsi["shots_blocked_against"].fillna(0)
-    corsi.drop(columns=["shots_blocked_against"], inplace=True)
+    # Corsi (Fenwick + blocked against)
+    corsi = (
+        fenwick.merge(shots_blocked_against, on=["playerId", "situation"], how="left")
+        .assign(corsi=lambda df: df["fenwick"] + df["shots_blocked_against"].fillna(0))
+        .drop(columns=["shots_blocked_against"])
+    )
 
     # Giveaways
     giveaways = (
@@ -818,35 +836,35 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .reset_index(name="takeaways")
     )
 
-    # Hits (as hitter)
+    # Hits for
     hits_for = (
         plays[plays["typeDescKey"] == "hit"]
         .dropna(subset=["hittingPlayerId"])
         .groupby(["hittingPlayerId", "situation"])
         .size()
         .reset_index(name="hits_for")
+        .rename(columns={"hittingPlayerId": "playerId"})
     )
-    hits_for.rename(columns={"hittingPlayerId": "playerId"}, inplace=True)
 
-    # Hits taken (as hittee)
+    # Hits taken
     hits_taken = (
         plays[plays["typeDescKey"] == "hit"]
         .dropna(subset=["hitteePlayerId"])
         .groupby(["hitteePlayerId", "situation"])
         .size()
         .reset_index(name="hits_taken")
+        .rename(columns={"hitteePlayerId": "playerId"})
     )
-    hits_taken.rename(columns={"hitteePlayerId": "playerId"}, inplace=True)
 
-    # Shots blocked (as blocker)
+    # Blocks (as blocker)
     shots_blocked_for = (
         plays[plays["typeDescKey"] == "blocked-shot"]
         .dropna(subset=["blockingPlayerId"])
         .groupby(["blockingPlayerId", "situation"])
         .size()
         .reset_index(name="blocks")
+        .rename(columns={"blockingPlayerId": "playerId"})
     )
-    shots_blocked_for.rename(columns={"blockingPlayerId": "playerId"}, inplace=True)
 
     # Faceoffs won
     faceoffs_won = (
@@ -855,8 +873,8 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .groupby(["winningPlayerId", "situation"])
         .size()
         .reset_index(name="faceoffs_won")
+        .rename(columns={"winningPlayerId": "playerId"})
     )
-    faceoffs_won.rename(columns={"winningPlayerId": "playerId"}, inplace=True)
 
     # Faceoffs lost
     faceoffs_lost = (
@@ -865,8 +883,8 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .groupby(["losingPlayerId", "situation"])
         .size()
         .reset_index(name="faceoffs_lost")
+        .rename(columns={"losingPlayerId": "playerId"})
     )
-    faceoffs_lost.rename(columns={"losingPlayerId": "playerId"}, inplace=True)
 
     # Penalties taken
     penalties_taken = (
@@ -875,8 +893,8 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .groupby(["committedByPlayerId", "situation"])
         .size()
         .reset_index(name="penalties_taken")
+        .rename(columns={"committedByPlayerId": "playerId"})
     )
-    penalties_taken.rename(columns={"committedByPlayerId": "playerId"}, inplace=True)
 
     # Penalties drawn
     penalties_drawn = (
@@ -885,10 +903,8 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .groupby(["drawnByPlayerId", "situation"])
         .size()
         .reset_index(name="penalties_drawn")
+        .rename(columns={"drawnByPlayerId": "playerId"})
     )
-    penalties_drawn.rename(columns={"drawnByPlayerId": "playerId"}, inplace=True)
-
-    # ===== MERGE ALL STATS INTO BOXSCORE =====
 
     all_stats = [
         goals,
@@ -907,7 +923,6 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         penalties_taken,
         penalties_drawn,
     ]
-
     for df_stat in all_stats:
         stat_col = [c for c in df_stat.columns if c not in ["playerId", "situation"]][0]
         boxscore = boxscore.merge(
@@ -919,4 +934,49 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         else:
             boxscore[stat_col] = boxscore[stat_col].fillna(0)
 
-    return {"home_stints": stints, "away_stints": stints, "boxscore": boxscore}
+    onice = (
+        player_stints[["playerId", "teamId", "stintIds"]]
+        .assign(on=1)
+        .pivot_table(
+            index="stintIds",
+            columns="playerId",
+            values="on",
+            aggfunc="max",
+            fill_value=0,
+        )
+    )
+
+    home_players = player_shifts[player_shifts["teamId"] == home_team_id][
+        "playerId"
+    ].unique()
+    away_players = player_shifts[player_shifts["teamId"] == away_team_id][
+        "playerId"
+    ].unique()
+
+    # prefix for home_stints
+    home_for = onice[home_players].add_prefix("for_")
+    home_against = onice[away_players].add_prefix("against_")
+
+    # prefix for away_stints
+    away_for = onice[away_players].add_prefix("for_")
+    away_against = onice[home_players].add_prefix("against_")
+
+    # attach to stints
+    home_stints = (
+        stints.join(home_for, how="left").join(home_against, how="left").fillna(0)
+    )
+    away_stints = (
+        stints.join(away_for, how="left").join(away_against, how="left").fillna(0)
+    )
+
+    home_stints["game"] = gameId
+    away_stints["game"] = gameId
+    boxscore["game"] = gameId
+    boxscore["f%"] = boxscore["ff"] / (boxscore["ff"] + boxscore["fa"])
+    boxscore["s%"] = boxscore["sogf"] / (boxscore["sogf"] + boxscore["soga"])
+    boxscore["g%"] = boxscore["gf"] / (boxscore["gf"] + boxscore["ga"])
+    return {
+        "home_stints": home_stints,
+        "away_stints": away_stints,
+        "boxscore": boxscore,
+    }

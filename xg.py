@@ -36,11 +36,11 @@ rows = (n_types + cols - 1) // cols
 fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5 * rows))
 
 
-cmap = "bwr"
+cmap = "bwr_r"
 shots["xG"] = model.predict_proba(X)[:, 1]
 xg_available = "xG" in shots.columns
 for ax, st in zip(axes.ravel(), shot_types):
-    draw_rink_features(ax)
+    draw_rink_features(ax, color="black")
     subset = shots[shots["shotType"] == st]
     colors = subset["xG"]
     sc = ax.scatter(
