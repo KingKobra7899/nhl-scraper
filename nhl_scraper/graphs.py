@@ -219,7 +219,7 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=10):
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="bwr_r",
+            cmap="RdBu",
             vmin=-diff.max(),
             vmax=diff.max(),
         )

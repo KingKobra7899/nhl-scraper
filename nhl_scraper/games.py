@@ -165,10 +165,33 @@ def getPbpData(gameid: str | int):
     shots["dist"] = np.sqrt((shots["xCoord"] - 89) ** 2 + shots["yCoord"] ** 2)
     shots["angle"] = np.arctan2(shots["xCoord"] - 89, shots["yCoord"])
 
+    plays["situation"] = plays.apply(
+        lambda row: get_sit(row["situationCode"], row["isHome"]), axis=1
+    )
+    shots["situation"] = shots.apply(
+        lambda row: getSituation(row["situationCode"], row["isHome"]), axis=1
+    )
+
     shots["venue"] = venue
     plays["venue"] = venue
     plays["game"] = gameid
     shots["game"] = gameid
+
+    shots = shots[
+        ~shots["situation"].isin(
+            [
+                "situation_0v1",
+                "situation_1v0",
+                "situation_1v4",
+                "situation_1v5",
+                "situation_3v1",
+                "situation_4v1",
+                "situation_3v6",
+                "situation_5v1",
+            ]
+        )
+    ]
+
     return {
         "venue": venue,
         "homeTeamId": home,

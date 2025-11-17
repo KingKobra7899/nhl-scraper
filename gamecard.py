@@ -1,5 +1,12 @@
 import nhl_scraper.graphs as gr
+import nhl_scraper.games as ga
+import matplotlib.pyplot as plt
 
-gameid = 2025020299
+team_id = 21
 
-gr.plot_game_shot_density(gameid, sigma=3, mode="diff")
+games = ga.getTeamSeasonGames(team_id, 20252026)
+shots = ga.scrapeGamesPbp(games)["shots"]
+fig = gr.plot_team_shot_density(
+    df=shots, id=team_id, gp=len(games), mode="diff", sigma=3
+)
+plt.show()
