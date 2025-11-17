@@ -85,36 +85,49 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
     elif mode == "diff":
         fig, ax = plt.subplots(1, 1, figsize=(10, 8.5))
         fig.set_dpi(200)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(-42.5, 42.5)
         im = ax.imshow(
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="RdBu",
+            cmap="bwr",
             vmin=-diff.max(),
             vmax=diff.max(),
         )
-        ax.contourf(
-            diff,
-            levels=np.linspace(diff.min(), diff.max(), 30),
-            linewidths=0.5,
-            extent=[xmin, xmax, ymin, ymax],
-            alpha=0.6,
-            cmap="RdBu",
-            vmin=-diff.max(),
-            vmax=diff.max(),
+
+        total = diff.sum()
+
+        # Normalize teamId to same colormap
+        norm = plt.Normalize(df["teamId"].min(), df["teamId"].max())
+
+        ax.scatter(
+            x=df["xCoord"],
+            y=df["yCoord"],
+            c=df["teamId"],
+            cmap="bwr",
+            norm=norm,
+            s=28,  # slightly larger for clarity
+            edgecolors="black",  # sharpens appearance
+            linewidths=0.4,
+            alpha=0.9,
         )
 
         ga.draw_rink_features(
             ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
         )
 
-        ax.set_title(ga.getGameString(game_id), fontsize=14)
+        ax.set_title(
+            f"{ga.getGameString(game_id)}, Fenwick Differential: {total:-.0f}",
+            fontsize=14,
+        )
         ax.set_xlabel("")
         ax.set_ylabel("")
+
         cbar = plt.colorbar(im, ax=ax, orientation="vertical", shrink=0.75)
-        cbar.set_label(
-            f"{team1_tricode} ← → {team2_tricode}", rotation=270, labelpad=20
-        )
+        cbar.ax.tick_params(labelsize=0)
+        plt.text(x=115, y=38, s=team1_tricode)
+        plt.text(x=115, y=-39.5, s=team2_tricode)
 
     plt.tight_layout()
     plt.show()
