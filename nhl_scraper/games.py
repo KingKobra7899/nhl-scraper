@@ -295,6 +295,7 @@ def getPbpData(gameid: str | int):
     xg_model = joblib.load("nhl_scraper/xg_model.joblib")
 
     shots["xG"] = xg_model.predict_proba(x)[:, 1]
+    shots["isEN"] = shots["situation"] == "5v6"
 
     return {
         "venue": venue,
@@ -719,6 +720,8 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         "penalties_taken",
         "penalties_drawn",
         "total_toi",
+        "xgf",
+        "xga",
         "ff",
         "fa",
         "sogf",
@@ -757,6 +760,8 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
             stint_metrics[idx] = {
                 "ff_home": 0,
                 "fa_home": 0,
+                "xgf_home": 0,
+                "xga_home": 0,
                 "sogf_home": 0,
                 "soga_home": 0,
                 "gf_home": 0,
@@ -785,11 +790,15 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
             (~stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
         ].shape[0]
 
+        xgf = stint_shots[(stint_shots["isHome"])]["xG"].sum()
+        xga = stint_shots[(~stint_shots["isHome"])]["xG"].sum()
         stint_metrics[idx] = {
             "ff_home": cf_home,
             "fa_home": ca_home,
             "sogf_home": sogf_home,
             "soga_home": soga_home,
+            "xgf_home": xgf,
+            "xga_home": xga,
             "gf_home": gf_home,
             "ga_home": ga_home,
         }
@@ -804,10 +813,12 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     def assign_metrics(r):
         if r["teamId"] == home_team_id:
             r["ff"], r["fa"] = r["ff_home"], r["fa_home"]
+            r["xgf"], r["xga"] = r["xgf_home"], r["xga_home"]
             r["sogf"], r["soga"] = r["sogf_home"], r["soga_home"]
             r["gf"], r["ga"] = r["gf_home"], r["ga_home"]
         else:
             r["ff"], r["fa"] = r["fa_home"], r["ff_home"]
+            r["xga"], r["xgf"] = r["xgf_home"], r["xga_home"]
             r["sogf"], r["soga"] = r["soga_home"], r["sogf_home"]
             r["gf"], r["ga"] = r["ga_home"], r["gf_home"]
         return r
@@ -818,7 +829,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     # AGGREGATE PER PLAYER X SITUATION
     player_metrics = (
         player_stints.groupby(["playerId", "situation"])[
-            ["ff", "fa", "sogf", "soga", "gf", "ga", "total_toi"]
+            ["ff", "fa", "sogf", "soga", "xgf", "xga", "gf", "ga", "total_toi"]
         ]
         .sum()
         .reset_index()
@@ -828,7 +839,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     boxscore = boxscore.merge(
         player_metrics, on=["playerId", "situation"], how="left", suffixes=("", "_agg")
     )
-    for col in ["ff", "fa", "sogf", "soga", "gf", "ga", "total_toi"]:
+    for col in ["ff", "fa", "sogf", "soga", "xgf", "xga", "gf", "ga", "total_toi"]:
         boxscore[col] = boxscore[f"{col}_agg"].fillna(0)
         boxscore.drop(columns=[f"{col}_agg"], inplace=True)
 
@@ -860,6 +871,12 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         .rename(columns={"scoringPlayerId": "playerId"})
     )
 
+    shots["playerId"] = np.where(
+        shots["shootingPlayerId"].isna(),
+        shots["scoringPlayerId"],
+        shots["shootingPlayerId"],
+    )
+    xg = shots.groupby(["playerId", "situation"]).agg({"xG": "sum"}).reset_index()
     # First assists
     assist1 = (
         shots[shots["typeDescKey"] == "goal"]
@@ -1035,6 +1052,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
 
     all_stats = [
         goals,
+        xg,
         assist1,
         assist2,
         fenwick,
@@ -1102,6 +1120,7 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     boxscore["f%"] = boxscore["ff"] / (boxscore["ff"] + boxscore["fa"])
     boxscore["s%"] = boxscore["sogf"] / (boxscore["sogf"] + boxscore["soga"])
     boxscore["g%"] = boxscore["gf"] / (boxscore["gf"] + boxscore["ga"])
+    boxscore["xg%"] = boxscore["xgf"] / (boxscore["xgf"] + boxscore["xga"])
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
