@@ -1155,9 +1155,34 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     shots: pd.DataFrame = shots.drop(columns=["scoringPlayerId", "shootingPlayerId"])
 
+    names = boxscore[["name", "playerId"]].drop_duplicates()
+    shots = pd.merge(shots, names, on="playerId", how="left")
+
+    player_teams = shots[["playerId", "teamId"]].drop_duplicates()
+    boxscore = pd.merge(boxscore, player_teams, on="playerId", how="left")
+
+    boxscore["corsi"] = boxscore["corsi_new"]
+    boxscore = boxscore.drop(columns="corsi_new")
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
         "shots": shots,
         "boxscore": boxscore,
     }
+
+
+def getGamesBoxscore(games: list[str | int]) -> dict[str, pd.DataFrame]:
+    stints = pd.DataFrame()
+    shots = pd.DataFrame()
+    boxscore = pd.DataFrame()
+
+    for game in tqdm(games):
+        try:
+            result = getBoxScore(game)
+            stints = pd.concat([stints, result["home_stints"], result["away_stints"]])
+            shots = pd.concat([shots, result["shots"]])
+            boxscore = pd.concat([boxscore, result["shots"]])
+        except Exception as e:
+            print(f"Failed for game: {game}, {e}")
+
+    return {"stints": stints, "shots": shots, "boxscore": boxscore}
