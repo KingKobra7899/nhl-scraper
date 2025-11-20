@@ -270,7 +270,7 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False):
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="seismic_r",
+            cmap="seismic",
             vmin=-diff.max(),
             vmax=diff.max(),
         )
@@ -284,9 +284,9 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False):
         #     vmax=diff.max(),
         # )
 
-        ga.draw_rink_features(
-            ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
-        )
+        # ga.draw_rink_features(
+        #     ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+        # )
         if not xG:
             ax.set_title(
                 f"{team1_tricode} Fenwick Differential  (Per-Game Differential: {diff.sum():+.2f})",
