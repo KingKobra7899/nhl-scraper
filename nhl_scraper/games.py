@@ -1171,7 +1171,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     }
 
 
-def getGamesBoxscore(games: list[str | int]) -> dict[str, pd.DataFrame]:
+def getGamesBoxscore(games: list[str]) -> dict[str, pd.DataFrame]:
     stints = pd.DataFrame()
     shots = pd.DataFrame()
     boxscore = pd.DataFrame()
