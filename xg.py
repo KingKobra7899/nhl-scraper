@@ -54,12 +54,11 @@ y = (shots["typeDescKey"] == "goal").values.astype(int)
 print("training model")
 model = GradientBoostingClassifier(n_estimators=300)
 model.fit(X, y)
-cal = CalibratedClassifierCV(method="sigmoid", cv=5)
-cal.fit(X, y)
+
 print("model trained")
 import joblib
 
-joblib.dump(cal, "nhl_scraper/xg_model.joblib")
+joblib.dump(model, "nhl_scraper/xg_model.joblib")
 
 importances = model.feature_importances_
 df_importances = pd.DataFrame({"feature": X.columns, "importance": importances})
