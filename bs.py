@@ -1,5 +1,5 @@
-import nhl_scraper.games as g
+import nhl_scraper.games as ga
 
-bs = g.getBoxScore(2025020299)
-
-bs["boxscore"].to_csv("bs.csv")
+games = ga.getSeasonPlayedGames(20202021, 20242025)
+shots = ga.scrapeGamesPbp(games)["shots"]
+shots.to_csv("tests/shots.csv")

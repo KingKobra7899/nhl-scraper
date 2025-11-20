@@ -5,6 +5,7 @@ import numpy as np
 import requests
 from typing import List
 from tqdm import tqdm
+import joblib
 
 
 def str_to_float(time_str: str) -> float:
@@ -165,9 +166,6 @@ def getPbpData(gameid: str | int):
     shots["dist"] = np.sqrt((shots["xCoord"] - 89) ** 2 + shots["yCoord"] ** 2)
     shots["angle"] = np.arctan2(shots["xCoord"] - 89, shots["yCoord"])
 
-    plays["situation"] = plays.apply(
-        lambda row: get_sit(row["situationCode"], row["isHome"]), axis=1
-    )
     shots["situation"] = shots.apply(
         lambda row: getSituation(row["situationCode"], row["isHome"]), axis=1
     )
@@ -180,17 +178,123 @@ def getPbpData(gameid: str | int):
     shots = shots[
         ~shots["situation"].isin(
             [
-                "situation_0v1",
-                "situation_1v0",
-                "situation_1v4",
-                "situation_1v5",
-                "situation_3v1",
-                "situation_4v1",
-                "situation_3v6",
-                "situation_5v1",
+                "0v1",
+                "1v0",
+                "1v4",
+                "1v5",
+                "3v1",
+                "4v1",
+                "3v6",
+                "6v3",
+                "5v1",
             ]
         )
     ]
+    X = pd.get_dummies(
+        shots[
+            [
+                "xCoord",
+                "yCoord",
+                "shotType",
+                "isHome",
+                "timeRemaining",
+                "periodType",
+                "situation",
+                "venue",
+            ]
+        ],
+        columns=["periodType", "shotType", "situation", "venue"],
+    )
+    cols = [
+        "xCoord",
+        "yCoord",
+        "isHome",
+        "timeRemaining",
+        "periodType_OT",
+        "periodType_REG",
+        "shotType_backhand",
+        "shotType_bat",
+        "shotType_between-legs",
+        "shotType_cradle",
+        "shotType_deflected",
+        "shotType_poke",
+        "shotType_slap",
+        "shotType_snap",
+        "shotType_tip-in",
+        "shotType_wrap-around",
+        "shotType_wrist",
+        "situation_3v3",
+        "situation_3v4",
+        "situation_3v5",
+        "situation_4v3",
+        "situation_4v4",
+        "situation_4v5",
+        "situation_4v6",
+        "situation_5v3",
+        "situation_5v4",
+        "situation_5v5",
+        "situation_5v6",
+        "situation_6v4",
+        "situation_6v5",
+        "venue_Amalie Arena",
+        "venue_Amerant Bank Arena",
+        "venue_American Airlines Center",
+        "venue_Avicii Arena",
+        "venue_BB&T Center",
+        "venue_Ball Arena",
+        "venue_Bell MTS Place",
+        "venue_Bridgestone Arena",
+        "venue_Canada Life Centre",
+        "venue_Canadian Tire Centre",
+        "venue_Capital One Arena",
+        "venue_Carter-Finley Stadium",
+        "venue_Centre Bell",
+        "venue_Climate Pledge Arena",
+        "venue_Commonwealth Stadium, Edmonton",
+        "venue_Crypto.com Arena",
+        "venue_Delta Center",
+        "venue_Edgewood Tahoe Resort",
+        "venue_Enterprise Center",
+        "venue_FLA Live Arena",
+        "venue_Fenway Park",
+        "venue_Gila River Arena",
+        "venue_Honda Center",
+        "venue_KeyBank Center",
+        "venue_Lenovo Center",
+        "venue_Little Caesars Arena",
+        "venue_Madison Square Garden",
+        "venue_MetLife Stadium",
+        "venue_Mullett Arena",
+        "venue_Nassau Veterans Memorial Coliseum",
+        "venue_Nationwide Arena",
+        "venue_Nissan Stadium",
+        "venue_Nokia Arena",
+        "venue_O2 Czech Republic",
+        "venue_Ohio Stadium",
+        "venue_PNC Arena",
+        "venue_PPG Paints Arena",
+        "venue_Prudential Center",
+        "venue_Rogers Arena",
+        "venue_Rogers Place",
+        "venue_SAP Center at San Jose",
+        "venue_STAPLES Center",
+        "venue_Scotiabank Arena",
+        "venue_Scotiabank Saddledome",
+        "venue_T-Mobile Arena",
+        "venue_T-Mobile Park",
+        "venue_TD Garden",
+        "venue_Target Field",
+        "venue_Tim Hortons Field",
+        "venue_UBS Arena",
+        "venue_United Center",
+        "venue_Wells Fargo Center",
+        "venue_Wrigley Field",
+        "venue_Xcel Energy Center",
+    ]
+    x = X.reindex(columns=cols, fill_value=0)
+    xg_model = joblib.load("nhl_scraper/xg_model.joblib")
+
+    shots["xG"] = xg_model.predict_proba(x)[:, 1]
 
     return {
         "venue": venue,
