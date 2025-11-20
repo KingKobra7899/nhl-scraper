@@ -19,7 +19,7 @@ def str_to_float(time_str: str) -> float:
         return -1
 
 
-def getPbpData(gameid: str | int):
+def getPbpData(gameid):
     """
     - Returns all play-by-play events for a game (that are tracked by NHL) \\
     - Shot-attempts are in a seperate df\\
@@ -306,7 +306,7 @@ def getPbpData(gameid: str | int):
     }
 
 
-def getGameString(gameid: str | int):
+def getGameString(gameid):
     url = f"https://api-web.nhle.com/v1/gamecenter/{gameid}/landing"
     response = requests.get(url)
     data = response.json()
@@ -317,7 +317,7 @@ def getGameString(gameid: str | int):
 
 
 @lru_cache(32)
-def getTeamName(teamid: str | int):
+def getTeamName(teamid):
     """
     recieves full nhl team name from that teams nhl api id
     """
@@ -501,7 +501,7 @@ def draw_rink_features(
         ax.add_patch(dot)
 
 
-def scrapeGamesPbp(games: List[str]) -> dict[str, pd.DataFrame | pd.Series]:
+def scrapeGamesPbp(games: List[str]):
     shots = pd.DataFrame()
     plays = pd.DataFrame()
     for game in tqdm(games):
@@ -644,7 +644,7 @@ def generateGameShifts(gameId):
     return df, stints
 
 
-def getSituation(situationCode: int | str, is_home: bool) -> str:
+def getSituation(situationCode, is_home: bool) -> str:
     h = str(situationCode)[1]
     a = str(situationCode)[2]
     return f"{a}v{h}" if is_home else f"{h}v{a}"
@@ -662,7 +662,7 @@ def get_sit(code, is_home):
         return "pk"
 
 
-def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
+def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     pbp = getPbpData(gameId)
     shots = pbp["shots"].copy()
     plays = pbp["plays"].copy()
@@ -1099,6 +1099,9 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     ].unique()
 
     # prefix for home_stints
+    stints = stints.join(stint_metrics, how="left").fillna(0)
+
+    # prefix for home_stints
     home_for = onice[home_players].add_prefix("for_")
     home_against = onice[away_players].add_prefix("against_")
 
@@ -1114,6 +1117,34 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
         stints.join(away_for, how="left").join(away_against, how="left").fillna(0)
     )
 
+    # Rename metrics to team-relative for home stints
+    home_stints = home_stints.rename(
+        columns={
+            "ff_home": "ff",
+            "fa_home": "fa",
+            "sogf_home": "sogf",
+            "soga_home": "soga",
+            "xgf_home": "xgf",
+            "xga_home": "xga",
+            "gf_home": "gf",
+            "ga_home": "ga",
+        }
+    )
+
+    # Swap metrics for away stints (their "for" is home's "against")
+    away_stints = away_stints.rename(
+        columns={
+            "ff_home": "fa",
+            "fa_home": "ff",
+            "sogf_home": "soga",
+            "soga_home": "sogf",
+            "xgf_home": "xga",
+            "xga_home": "xgf",
+            "gf_home": "ga",
+            "ga_home": "gf",
+        }
+    )
+
     home_stints["game"] = gameId
     away_stints["game"] = gameId
     boxscore["game"] = gameId
@@ -1121,8 +1152,12 @@ def getBoxScore(gameId: str | int) -> dict[str, pd.DataFrame]:
     boxscore["s%"] = boxscore["sogf"] / (boxscore["sogf"] + boxscore["soga"])
     boxscore["g%"] = boxscore["gf"] / (boxscore["gf"] + boxscore["ga"])
     boxscore["xg%"] = boxscore["xgf"] / (boxscore["xgf"] + boxscore["xga"])
+
+    shots: pd.DataFrame = shots.drop(columns=["scoringPlayerId", "shootingPlayerId"])
+
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
+        "shots": shots,
         "boxscore": boxscore,
     }
