@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-def plot_game_shot_density(game_id, mode="both", sigma=10):
+def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
     df: pd.DataFrame = ga.getPbpData(game_id)["shots"]
     teams = df["teamId"].unique()
     team1_df = df[df["teamId"] == teams[0]]
@@ -15,18 +15,36 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
     team2_name, team2_tricode = ga.getTeamName(teams[1])
     xmin, xmax = 0, 100
     ymin, ymax = -44.5, 44.5
-    H1, xedges, yedges = np.histogram2d(
-        team1_df["xCoord"],
-        team1_df["yCoord"],
-        bins=[100 * 3, 89 * 3],
-        range=[[xmin, xmax], [ymin, ymax]],
-    )
-    H2, _, _ = np.histogram2d(
-        team2_df["xCoord"],
-        team2_df["yCoord"],
-        bins=[100 * 3, 89 * 3],
-        range=[[xmin, xmax], [ymin, ymax]],
-    )
+    if not xG:
+        H1, xedges, yedges = np.histogram2d(
+            team1_df["xCoord"],
+            team1_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+        )
+
+        H2, _, _ = np.histogram2d(
+            team2_df["xCoord"],
+            team2_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+        )
+    else:
+        H1, xedges, yedges = np.histogram2d(
+            team1_df["xCoord"],
+            team1_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+            weights=team1_df["xG"],
+        )
+
+        H2, _, _ = np.histogram2d(
+            team2_df["xCoord"],
+            team2_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+            weights=team2_df["xG"],
+        )
     density1 = gaussian_filter(H1.T, sigma=sigma * 3)
     density2 = gaussian_filter(H2.T, sigma=sigma * 3)
     diff = density1 - density2
@@ -52,7 +70,10 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
             vmin=0,
             vmax=vmax,
         )
-        ax1.set_title(f"{team1_tricode} Shot Density", fontsize=14)
+        if not xG:
+            ax1.set_title(f"{team1_tricode} Shot Density", fontsize=14)
+        else:
+            ax1.set_title(f"{team1_tricode} xG Density", fontsize=14)
         ax1.set_xlabel("X Coord")
         ax1.set_ylabel("Y Coord")
         ga.draw_rink_features(
@@ -75,7 +96,10 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
             vmin=0,
             vmax=vmax,
         )
-        ax2.set_title(f"{team2_tricode} Shot Density", fontsize=14)
+        if not xG:
+            ax2.set_title(f"{team2_tricode} Shot Density", fontsize=14)
+        else:
+            ax2.set_title(f"{team2_tricode} xG Density", fontsize=14)
         ax2.set_xlabel("X Coord")
         ax2.set_ylabel("Y Coord")
         ga.draw_rink_features(
@@ -117,10 +141,17 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
             ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
         )
 
-        ax.set_title(
-            f"{ga.getGameString(game_id)}, Fenwick Differential: {total:-.0f}",
-            fontsize=14,
-        )
+        if not xG:
+            ax.set_title(
+                f"{ga.getGameString(game_id)}, Fenwick Differential: {total:-.0f}",
+                fontsize=14,
+            )
+        else:
+            total_diff = team1_df["xG"].sum() - team2_df["xG"].sum()
+            ax.set_title(
+                f"{ga.getGameString(game_id)}, Expected Goal Differential: {total_diff:-.2f}",
+                fontsize=14,
+            )
         ax.set_xlabel("")
         ax.set_ylabel("")
 
@@ -133,26 +164,46 @@ def plot_game_shot_density(game_id, mode="both", sigma=10):
     plt.show()
 
 
-def plot_team_shot_density(df, id, gp, mode="both", sigma=10):
+def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False):
+    # df = df[df["situationCode"] == "1551"]
     team1_df = df[df["teamId"] == id]
+
     team2_df = df[df["teamId"] != id]
     # Get team names
     team1_name, team1_tricode = ga.getTeamName(id)
 
     xmin, xmax = 0, 100
     ymin, ymax = -44.5, 44.5
-    H1, xedges, yedges = np.histogram2d(
-        team1_df["xCoord"],
-        team1_df["yCoord"],
-        bins=[100 * 3, 89 * 3],
-        range=[[xmin, xmax], [ymin, ymax]],
-    )
-    H2, _, _ = np.histogram2d(
-        team2_df["xCoord"],
-        team2_df["yCoord"],
-        bins=[100 * 3, 89 * 3],
-        range=[[xmin, xmax], [ymin, ymax]],
-    )
+    if not xG:
+        H1, xedges, yedges = np.histogram2d(
+            team1_df["xCoord"],
+            team1_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+        )
+
+        H2, _, _ = np.histogram2d(
+            team2_df["xCoord"],
+            team2_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+        )
+    else:
+        H1, xedges, yedges = np.histogram2d(
+            team1_df["xCoord"],
+            team1_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+            weights=team1_df["xG"],
+        )
+
+        H2, _, _ = np.histogram2d(
+            team2_df["xCoord"],
+            team2_df["yCoord"],
+            bins=[100 * 3, 89 * 3],
+            range=[[xmin, xmax], [ymin, ymax]],
+            weights=team2_df["xG"],
+        )
     density1 = gaussian_filter(H1.T, sigma=sigma * 3)
     density2 = gaussian_filter(H2.T, sigma=sigma * 3)
     diff = density1 - density2
@@ -219,7 +270,7 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=10):
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="RdBu",
+            cmap="seismic_r",
             vmin=-diff.max(),
             vmax=diff.max(),
         )
@@ -236,11 +287,16 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=10):
         ga.draw_rink_features(
             ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
         )
-
-        ax.set_title(
-            f"{team1_tricode} Fenwick Differential  (Per-Game Differential: {diff.sum():+.2f})",
-            fontsize=14,
-        )
+        if not xG:
+            ax.set_title(
+                f"{team1_tricode} Fenwick Differential  (Per-Game Differential: {diff.sum():+.2f})",
+                fontsize=14,
+            )
+        else:
+            ax.set_title(
+                f"{team1_tricode} Expected Goal Differential:  {diff.sum():+.2f})",
+                fontsize=14,
+            )
         ax.set_xlabel("")
         ax.set_ylabel("")
         cbar = plt.colorbar(im, ax=ax, orientation="vertical", shrink=0.75)
