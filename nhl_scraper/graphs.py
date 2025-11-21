@@ -116,14 +116,19 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="bwr_r",
+            cmap="seismic",
             vmin=-diff.max(),
             vmax=diff.max(),
         )
 
         total = diff.sum()
 
-        team_cmap = ListedColormap(["blue", "red"])
+        team_cmap = ListedColormap(
+            [
+                "red",
+                "blue",
+            ]
+        )
 
         # team1 should be entry 0, team2 entry 1
         df["teamIndex"] = df["teamId"].apply(lambda tid: 0 if tid == teams[0] else 1)

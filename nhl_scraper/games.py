@@ -296,7 +296,8 @@ def getPbpData(gameid):
 
     shots["xG"] = xg_model.predict_proba(x)[:, 1]
     shots["isEN"] = shots["situation"] == "5v6"
-
+    shots = shots[~shots["isEN"]]
+    shots = shots.drop(columns="isEN")
     return {
         "venue": venue,
         "homeTeamId": home,
@@ -661,10 +662,46 @@ def get_sit(code, is_home):
 
 
 def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
+    url = f"https://api-web.nhle.com/v1/gamecenter/{gameId}/boxscore"
+    r = requests.get(url)
+    df = r.json()
+
+    players = df["playerByGameStats"]
+
+    hf = pd.DataFrame(players["homeTeam"]["forwards"])[
+        ["playerId", "sweaterNumber", "position"]
+    ]
+
+    hd = pd.DataFrame(players["homeTeam"]["defense"])[
+        ["playerId", "sweaterNumber", "position"]
+    ]
+
+    hg = pd.DataFrame(players["homeTeam"]["goalies"])[
+        ["playerId", "sweaterNumber", "position"]
+    ]
+
+    af = pd.DataFrame(players["awayTeam"]["forwards"])[
+        ["playerId", "sweaterNumber", "position"]
+    ]
+
+    ad = pd.DataFrame(players["awayTeam"]["defense"])[
+        ["playerId", "sweaterNumber", "position"]
+    ]
+
+    ag = pd.DataFrame(players["awayTeam"]["goalies"])[
+        ["playerId", "sweaterNumber", "position"]
+    ]
+
+    goalies = pd.concat([ag, hg])["playerId"].to_list()
+
+    metadata = pd.concat([hf, hg, hd, af, ag, ad])
+
     pbp = getPbpData(gameId)
     shots = pbp["shots"].copy()
     plays = pbp["plays"].copy()
     player_shifts, stints = generateGameShifts(gameId)
+
+    player_shifts = player_shifts[~player_shifts["playerId"].isin(goalies)]
 
     home_team_id = int(pbp["homeTeamId"])
     away_team_id = int(pbp["awayTeamId"])
@@ -1165,7 +1202,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         "home_stints": home_stints,
         "away_stints": away_stints,
         "shots": shots,
-        "boxscore": boxscore,
+        "boxscore": boxscore.merge(metadata, on="playerId", how="left"),
     }
 
 
