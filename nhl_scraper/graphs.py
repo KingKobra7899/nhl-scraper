@@ -3,6 +3,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 
 
 def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
@@ -115,26 +116,41 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="bwr",
+            cmap="bwr_r",
             vmin=-diff.max(),
             vmax=diff.max(),
         )
 
         total = diff.sum()
 
-        # Normalize teamId to same colormap
-        norm = plt.Normalize(df["teamId"].min(), df["teamId"].max())
+        team_cmap = ListedColormap(["blue", "red"])
 
+        # team1 should be entry 0, team2 entry 1
+        df["teamIndex"] = df["teamId"].apply(lambda tid: 0 if tid == teams[0] else 1)
+        goals = df[df["typeDescKey"] == "goal"]
         ax.scatter(
-            x=df["xCoord"],
-            y=df["yCoord"],
-            c=df["teamId"],
-            cmap="bwr",
-            norm=norm,
-            s=28,  # slightly larger for clarity
-            edgecolors="black",  # sharpens appearance
+            x=goals["xCoord"],
+            y=goals["yCoord"],
+            c=goals["teamIndex"],
+            marker="*",
+            cmap=team_cmap,
+            s=100,
+            edgecolors="black",
             linewidths=0.4,
-            alpha=0.9,
+            alpha=1.0,
+        )
+
+        shots = df[df["typeDescKey"] != "goal"]
+        ax.scatter(
+            x=shots["xCoord"],
+            y=shots["yCoord"],
+            c=shots["teamIndex"],
+            marker="o",
+            cmap=team_cmap,
+            s=25,
+            edgecolors="black",
+            linewidths=0.4,
+            alpha=1.0,
         )
 
         ga.draw_rink_features(
@@ -149,7 +165,7 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
         else:
             total_diff = team1_df["xG"].sum() - team2_df["xG"].sum()
             ax.set_title(
-                f"{ga.getGameString(game_id)}, Expected Goal Differential: {total_diff:-.2f}",
+                f"{ga.getGameString(game_id)}, Expected Goal Differential: {total_diff:+.2f}",
                 fontsize=14,
             )
         ax.set_xlabel("")

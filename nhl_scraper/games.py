@@ -620,20 +620,18 @@ def generateGameShifts(gameId):
     r = requests.get(url)
     df = pd.DataFrame(r.json()["data"])
     df = df[df["detailCode"] == 0]
-    # Convert times to float minutes
+
     df["startTime"] = df.startTime.apply(str_to_float) + (df.period - 1) * 20
     df["endTime"] = df.endTime.apply(str_to_float) + (df.period - 1) * 20
 
-    # Collect all unique time points
+    # TODO: REMOVE GOALIES, ADD ZONE START AND MANPOWER
     time_points = pd.unique(pd.concat([df.startTime, df.endTime]))
     time_points.sort()
 
-    # Create stints: each interval between consecutive time points
     stints = pd.DataFrame({"start": time_points[:-1], "end": time_points[1:]})
     stints["duration"] = stints["end"] - stints["start"]
     stints["stintId"] = stints.index
 
-    # For each player, record which stints they are on ice
     df["stintIds"] = df.apply(
         lambda row: stints[
             (stints["start"] < row["endTime"]) & (stints["end"] > row["startTime"])

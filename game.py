@@ -1,4 +1,5 @@
 import nhl_scraper.games as ga
 import nhl_scraper.graphs as gr
+import matplotlib
 
-ga.getBoxScore(2025020313)["boxscore"].to_csv("test.csv")
+fig = ga.getBoxScore(2025020326)["shots"].to_csv("test.csv")
