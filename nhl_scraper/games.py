@@ -807,7 +807,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     player_stints = player_stints.merge(
         stint_metrics, left_on="stintIds", right_index=True, how="left"
-    ).fillna(0)
+    ).infer_objects(copy=False)
 
     # ASSIGN TEAM-RELATIVE METRICS
     def assign_metrics(r):
