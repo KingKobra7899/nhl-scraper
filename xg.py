@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import nhl_scraper.games as ga
 
 shots = pd.read_csv("tests/shots.csv")
+shots["season"] = shots["game"].apply(lambda x: int(str(x)[0:4]))
+shots = shots[shots["season"] >= 2023]
 shots = shots.dropna(
     subset=["xCoord", "yCoord", "shotType", "isHome", "timeRemaining", "periodType"]
 )
@@ -43,11 +45,11 @@ X = pd.get_dummies(
             "timeRemaining",
             "periodType",
             "situation",
-            "venue",
         ]
     ],
-    columns=["periodType", "shotType", "situation", "venue"],
+    columns=["periodType", "shotType", "situation"],
 )
+print(X.columns)
 y = (shots["typeDescKey"] == "goal").values.astype(int)
 
 

@@ -200,10 +200,9 @@ def getPbpData(gameid):
                 "timeRemaining",
                 "periodType",
                 "situation",
-                "venue",
             ]
         ],
-        columns=["periodType", "shotType", "situation", "venue"],
+        columns=["periodType", "shotType", "situation"],
     )
     cols = [
         "xCoord",
@@ -236,60 +235,6 @@ def getPbpData(gameid):
         "situation_5v6",
         "situation_6v4",
         "situation_6v5",
-        "venue_Amalie Arena",
-        "venue_Amerant Bank Arena",
-        "venue_American Airlines Center",
-        "venue_Avicii Arena",
-        "venue_BB&T Center",
-        "venue_Ball Arena",
-        "venue_Bell MTS Place",
-        "venue_Bridgestone Arena",
-        "venue_Canada Life Centre",
-        "venue_Canadian Tire Centre",
-        "venue_Capital One Arena",
-        "venue_Carter-Finley Stadium",
-        "venue_Centre Bell",
-        "venue_Climate Pledge Arena",
-        "venue_Commonwealth Stadium, Edmonton",
-        "venue_Crypto.com Arena",
-        "venue_Delta Center",
-        "venue_Edgewood Tahoe Resort",
-        "venue_Enterprise Center",
-        "venue_FLA Live Arena",
-        "venue_Fenway Park",
-        "venue_Gila River Arena",
-        "venue_Honda Center",
-        "venue_KeyBank Center",
-        "venue_Lenovo Center",
-        "venue_Little Caesars Arena",
-        "venue_Madison Square Garden",
-        "venue_MetLife Stadium",
-        "venue_Mullett Arena",
-        "venue_Nassau Veterans Memorial Coliseum",
-        "venue_Nationwide Arena",
-        "venue_Nissan Stadium",
-        "venue_Nokia Arena",
-        "venue_O2 Czech Republic",
-        "venue_Ohio Stadium",
-        "venue_PNC Arena",
-        "venue_PPG Paints Arena",
-        "venue_Prudential Center",
-        "venue_Rogers Arena",
-        "venue_Rogers Place",
-        "venue_SAP Center at San Jose",
-        "venue_STAPLES Center",
-        "venue_Scotiabank Arena",
-        "venue_Scotiabank Saddledome",
-        "venue_T-Mobile Arena",
-        "venue_T-Mobile Park",
-        "venue_TD Garden",
-        "venue_Target Field",
-        "venue_Tim Hortons Field",
-        "venue_UBS Arena",
-        "venue_United Center",
-        "venue_Wells Fargo Center",
-        "venue_Wrigley Field",
-        "venue_Xcel Energy Center",
     ]
     x = X.reindex(columns=cols, fill_value=0)
     xg_model = joblib.load("nhl_scraper/xg_model.joblib")
@@ -625,7 +570,6 @@ def generateGameShifts(gameId):
     df["startTime"] = df.startTime.apply(str_to_float) + (df.period - 1) * 20
     df["endTime"] = df.endTime.apply(str_to_float) + (df.period - 1) * 20
 
-    # TODO: REMOVE GOALIES, ADD ZONE START AND MANPOWER
     time_points = pd.unique(pd.concat([df.startTime, df.endTime]))
     time_points.sort()
 
@@ -1198,6 +1142,111 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     boxscore["corsi"] = boxscore["corsi_new"]
     boxscore = boxscore.drop(columns="corsi_new")
+
+    home_stints["isHome"] = 1
+    away_stints["isHome"] = 0
+
+    # Extract faceoff events with their start times
+    faceoffs = plays[plays["typeDescKey"] == "faceoff"][
+        ["timeInPeriod", "zoneCode", "eventOwnerTeamId"]
+    ].copy()
+
+    # Build a lookup keyed by stint start time
+    stint_zone = {}
+    for idx, row in stints.iterrows():
+        start_t = row["start"]
+
+        # Find faceoff exactly at stint start
+        f = faceoffs[faceoffs["timeInPeriod"] == start_t]
+        if f.empty:
+            stint_zone[idx] = {"zone": "FLY", "owner": None}
+        else:
+            z = f["zoneCode"].iloc[0]
+            owner = int(f["eventOwnerTeamId"].iloc[0])
+            stint_zone[idx] = {"zone": z, "owner": owner}
+
+    # Convert to DataFrame
+    stint_zone = pd.DataFrame.from_dict(stint_zone, orient="index").rename(
+        columns={"zone": "raw_zone", "owner": "faceoff_owner"}
+    )
+
+    # Merge into home_stints / away_stints
+    home_stints = home_stints.merge(stint_zone, left_index=True, right_index=True)
+    away_stints = away_stints.merge(stint_zone, left_index=True, right_index=True)
+
+    # Adjust zone for home and away relative positions
+    def map_zone(raw_zone, owner, is_home_view):
+        if raw_zone == "FLY" or raw_zone == "N" or owner is None:
+            return raw_zone
+
+        # raw_zone is D or O from faceoff owner's perspective
+        # If viewing team == owner, keep zone
+        if is_home_view == (owner == home_team_id):
+            return raw_zone
+
+        # Opposite team sees the inverse O<->D
+        if raw_zone == "O":
+            return "D"
+        elif raw_zone == "D":
+            return "O"
+
+        return raw_zone
+
+    home_stints["zone"] = home_stints.apply(
+        lambda r: map_zone(r["raw_zone"], r["faceoff_owner"], True), axis=1
+    )
+
+    away_stints["zone"] = away_stints.apply(
+        lambda r: map_zone(r["raw_zone"], r["faceoff_owner"], False), axis=1
+    )
+    sit_events = plays.dropna(subset=["situationCode"])[
+        ["timeInPeriod", "situationCode", "teamId"]
+    ].copy()
+
+    # first situation at each timestamp
+    sit_events = sit_events.groupby("timeInPeriod").first().reset_index()
+
+    # build lookup keyed by stint start time
+    stint_mp = {}
+    for idx, row in stints.iterrows():
+        start_t = row["start"]
+
+        hit = sit_events[sit_events["timeInPeriod"] == start_t]
+        if hit.empty:
+            stint_mp[idx] = {
+                "raw_situation": None,
+                "sit_team": None,
+            }
+        else:
+            stint_mp[idx] = {
+                "raw_situation": hit["situationCode"].iloc[0],
+                "sit_team": int(hit["teamId"].iloc[0]),
+            }
+
+    stint_mp = pd.DataFrame.from_dict(stint_mp, orient="index").rename(
+        columns={"raw_situation": "manpower_raw", "sit_team": "manpower_team"}
+    )
+
+    home_stints = home_stints.merge(stint_mp, left_index=True, right_index=True)
+    away_stints = away_stints.merge(stint_mp, left_index=True, right_index=True)
+
+    def map_mp(raw_sit, mp_team, is_home_view):
+        if raw_sit is None or mp_team is None:
+            return "NA"  # fallback when nothing is set
+
+        # is the event tagged to the home team?
+        owner_is_home = mp_team == home_team_id
+
+        # feed correct "is_home" perspective to getSituation
+        return getSituation(raw_sit, owner_is_home == is_home_view)
+
+    home_stints["manpower"] = home_stints.apply(
+        lambda r: map_mp(r["manpower_raw"], r["manpower_team"], True), axis=1
+    )
+
+    away_stints["manpower"] = away_stints.apply(
+        lambda r: map_mp(r["manpower_raw"], r["manpower_team"], False), axis=1
+    )
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
