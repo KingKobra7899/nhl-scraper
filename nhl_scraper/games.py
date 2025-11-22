@@ -481,8 +481,8 @@ def getSeasonPlayedGames(season1: int, season2: int) -> List[str]:
 
 
 # x in y
-def getTeamSeasonGames(team: int, season: int) -> List[str]:
-    url = f"https://api-web.nhle.com/v1/club-schedule-season/{getTeamName(team)[1]}/{season}"
+def getTeamSeasonGames(team: str, season: int) -> List[str]:
+    url = f"https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
     response = requests.get(url)
     if response.status_code != 200:
         print(url)
@@ -1148,7 +1148,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     # Extract faceoff events with their start times
     faceoffs = plays[plays["typeDescKey"] == "faceoff"][
-        ["timeInPeriod", "zoneCode", "eventOwnerTeamId"]
+        ["timeInPeriod", "zoneCode", "teamId"]
     ].copy()
 
     # Build a lookup keyed by stint start time
@@ -1162,7 +1162,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
             stint_zone[idx] = {"zone": "FLY", "owner": None}
         else:
             z = f["zoneCode"].iloc[0]
-            owner = int(f["eventOwnerTeamId"].iloc[0])
+            owner = int(f["teamId"].iloc[0])
             stint_zone[idx] = {"zone": z, "owner": owner}
 
     # Convert to DataFrame
@@ -1199,54 +1199,93 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     away_stints["zone"] = away_stints.apply(
         lambda r: map_zone(r["raw_zone"], r["faceoff_owner"], False), axis=1
     )
-    sit_events = plays.dropna(subset=["situationCode"])[
-        ["timeInPeriod", "situationCode", "teamId"]
-    ].copy()
 
-    # first situation at each timestamp
-    sit_events = sit_events.groupby("timeInPeriod").first().reset_index()
+    # home_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
+    # away_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
+    def assign_stint_manpower(stints_df, events_df, home_team_id):
+        stints_df["manpower"] = pd.NA
 
-    # build lookup keyed by stint start time
-    stint_mp = {}
-    for idx, row in stints.iterrows():
-        start_t = row["start"]
+        for idx, stint in stints_df.iterrows():
+            events_in_stint = events_df[
+                (events_df["timeInPeriod"] > stint["start"])
+                & (events_df["timeInPeriod"] <= stint["end"])
+            ]
+            if not events_in_stint.empty:
+                first_event = events_in_stint.iloc[0]
 
-        hit = sit_events[sit_events["timeInPeriod"] == start_t]
-        if hit.empty:
-            stint_mp[idx] = {
-                "raw_situation": None,
-                "sit_team": None,
-            }
-        else:
-            stint_mp[idx] = {
-                "raw_situation": hit["situationCode"].iloc[0],
-                "sit_team": int(hit["teamId"].iloc[0]),
-            }
+                stints_df.at[idx, "manpower"] = getSituation(
+                    first_event["situationCode"], stint["isHome"]
+                )
 
-    stint_mp = pd.DataFrame.from_dict(stint_mp, orient="index").rename(
-        columns={"raw_situation": "manpower_raw", "sit_team": "manpower_team"}
+        return stints_df
+
+    # Apply to home and away stints
+    home_stints = assign_stint_manpower(
+        home_stints, pd.concat([shots, plays]), home_team_id
+    )
+    away_stints = assign_stint_manpower(
+        away_stints, pd.concat([shots, plays]), home_team_id
     )
 
-    home_stints = home_stints.merge(stint_mp, left_index=True, right_index=True)
-    away_stints = away_stints.merge(stint_mp, left_index=True, right_index=True)
+    def update_manpower_penalty(stints_df, penalty_events, other_events, home_team_id):
+        if "manpower" not in stints_df.columns:
+            stints_df["manpower"] = pd.NA
 
-    def map_mp(raw_sit, mp_team, is_home_view):
-        if raw_sit is None or mp_team is None:
-            return "NA"  # fallback when nothing is set
+        # Consider only events that are NOT penalties (these give the next manpower)
+        non_penalty_events = other_events[
+            other_events["typeDescKey"] != "penalty"
+        ].sort_values("timeInPeriod")
 
-        # is the event tagged to the home team?
-        owner_is_home = mp_team == home_team_id
+        for _, pen in penalty_events.sort_values("timeInPeriod").iterrows():
+            # Find the next non-penalty event after the penalty
+            next_event = non_penalty_events[
+                non_penalty_events["timeInPeriod"] >= pen["timeInPeriod"]
+            ].head(1)
+            if next_event.empty:
+                continue  # nothing to propagate
+            ev = next_event.iloc[0]
+            manpower_to_propagate = getSituation(
+                ev["situationCode"], True
+            )  # True = home perspective
 
-        # feed correct "is_home" perspective to getSituation
-        return getSituation(raw_sit, owner_is_home == is_home_view)
+            # Determine end of propagation window: penalty duration or goal (whichever comes first)
+            penalty_end = pen["timeInPeriod"] + pen["duration"]
 
-    home_stints["manpower"] = home_stints.apply(
-        lambda r: map_mp(r["manpower_raw"], r["manpower_team"], True), axis=1
+            # Stop propagation at a goal if it occurs within the penalty
+            goals = non_penalty_events[
+                (non_penalty_events["typeDescKey"] == "goal")
+                & (non_penalty_events["timeInPeriod"] >= pen["timeInPeriod"])
+                & (non_penalty_events["timeInPeriod"] < penalty_end)
+            ]
+            if not goals.empty:
+                penalty_end = min(goals["timeInPeriod"].min(), penalty_end)
+
+            # Apply manpower to all overlapping stints that are NA
+            mask = (
+                (stints_df["start"] < penalty_end)
+                & (stints_df["end"] > pen["timeInPeriod"])
+                & (stints_df["manpower"].isna())
+            )
+            stints_df.loc[mask, "manpower"] = manpower_to_propagate
+
+        return stints_df
+
+    # Apply to home and away stints
+    penalty_events = plays[plays["typeDescKey"] == "penalty"]
+    all_events = pd.concat([shots, plays])
+    home_stints = update_manpower_penalty(
+        home_stints, penalty_events, all_events, home_team_id
+    )
+    away_stints = update_manpower_penalty(
+        away_stints, penalty_events, all_events, home_team_id
     )
 
-    away_stints["manpower"] = away_stints.apply(
-        lambda r: map_mp(r["manpower_raw"], r["manpower_team"], False), axis=1
-    )
+    home_stints["manpower"] = home_stints["manpower"].fillna("5v5")
+    away_stints["manpower"] = away_stints["manpower"].fillna("5v5")
+
+    home_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
+    away_stints = away_stints.drop(columns=["raw_zone", "faceoff_owner"])
+    away_stints = away_stints.drop(columns=["raw_zone", "faceoff_owner"])
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,

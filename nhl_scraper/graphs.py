@@ -185,13 +185,15 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
     plt.show()
 
 
-def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False):
-    # df = df[df["situationCode"] == "1551"]
-    team1_df = df[df["teamId"] == id]
+def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap=False):
+    df = df[df["situationCode"] == "1551"]
 
-    team2_df = df[df["teamId"] != id]
+    team = df["teamId"].apply(lambda x: ga.getTeamName(x)[1])
+    team1_df = df[team == id]
+
+    team2_df = df[team != id]
     # Get team names
-    team1_name, team1_tricode = ga.getTeamName(id)
+    team1_tricode = id
 
     xmin, xmax = 0, 100
     ymin, ymax = -44.5, 44.5
@@ -287,11 +289,12 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False):
         fig.set_dpi(200)
 
         diff /= gp
+        cmap = "binary" if heightmap else "seismic"
         im = ax.imshow(
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="seismic",
+            cmap=cmap,
             vmin=-diff.max(),
             vmax=diff.max(),
         )
