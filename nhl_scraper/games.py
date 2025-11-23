@@ -1304,7 +1304,7 @@ def getGamesBoxscore(games: list[str]) -> dict[str, pd.DataFrame]:
             result = getBoxScore(game)
             stints = pd.concat([stints, result["home_stints"], result["away_stints"]])
             shots = pd.concat([shots, result["shots"]])
-            boxscore = pd.concat([boxscore, result["shots"]])
+            boxscore = pd.concat([boxscore, result["boxscore"]])
         except Exception as e:
             print(f"Failed for game: {game}, {e}")
 

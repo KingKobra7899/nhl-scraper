@@ -196,26 +196,26 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
     team1_tricode = id
 
     xmin, xmax = 0, 100
-    ymin, ymax = -44.5, 44.5
+    ymin, ymax = -42.5, 42.5
     if not xG:
         H1, xedges, yedges = np.histogram2d(
             team1_df["xCoord"],
             team1_df["yCoord"],
-            bins=[100 * 3, 89 * 3],
+            bins=[100 * 3, 85 * 3],
             range=[[xmin, xmax], [ymin, ymax]],
         )
 
         H2, _, _ = np.histogram2d(
             team2_df["xCoord"],
             team2_df["yCoord"],
-            bins=[100 * 3, 89 * 3],
+            bins=[100 * 3, 85 * 3],
             range=[[xmin, xmax], [ymin, ymax]],
         )
     else:
         H1, xedges, yedges = np.histogram2d(
             team1_df["xCoord"],
             team1_df["yCoord"],
-            bins=[100 * 3, 89 * 3],
+            bins=[100 * 3, 85 * 3],
             range=[[xmin, xmax], [ymin, ymax]],
             weights=team1_df["xG"],
         )
@@ -223,15 +223,15 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
         H2, _, _ = np.histogram2d(
             team2_df["xCoord"],
             team2_df["yCoord"],
-            bins=[100 * 3, 89 * 3],
+            bins=[100 * 3, 85 * 3],
             range=[[xmin, xmax], [ymin, ymax]],
             weights=team2_df["xG"],
         )
     density1 = gaussian_filter(H1.T, sigma=sigma * 3)
     density2 = gaussian_filter(H2.T, sigma=sigma * 3)
     diff = density1 - density2
-    vmax = max(density1.max(), density2.max())
-    vmin = 0
+    vmax = max(abs(diff.max()), abs(diff.min()))
+
     if mode == "both":
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
         fig.set_dpi(200)
@@ -289,14 +289,14 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
         fig.set_dpi(200)
 
         diff /= gp
-        cmap = "binary" if heightmap else "seismic"
+        cmap = "binary_r" if heightmap else "seismic"
         im = ax.imshow(
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
             cmap=cmap,
-            vmin=-diff.max(),
-            vmax=diff.max(),
+            vmin=-vmax / gp,
+            vmax=vmax / gp,
         )
         # ax.contourf(
         #     diff,
@@ -307,10 +307,11 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
         #     vmin=-diff.max(),
         #     vmax=diff.max(),
         # )
-
-        # ga.draw_rink_features(
-        #     ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
-        # )
+        if not heightmap:
+            # ga.draw_rink_features(
+            #     ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+            # )
+            pass
         if not xG:
             ax.set_title(
                 f"{team1_tricode} Fenwick Differential  (Per-Game Differential: {diff.sum():+.2f})",
@@ -323,6 +324,8 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
             )
         ax.set_xlabel("")
         ax.set_ylabel("")
+        plt.xticks([])  # Removes x-axis ticks and labels
+        plt.yticks([])
         cbar = plt.colorbar(im, ax=ax, orientation="vertical", shrink=0.75)
         cbar.set_label(f"Good ← → Bad", rotation=270, labelpad=20)
 

@@ -1,5 +1,6 @@
 from functools import lru_cache
 import requests
+import pandas as pd
 
 
 def get_player_pic_url(player_id):
@@ -68,3 +69,17 @@ def get_player_name(player_id):
     except Exception as e:
         print(f"Failed to fetch player name for ID {player_id}: {e}")
         return "N/A"
+
+
+def getTeamSeasonRoster(team, season, positions=["forwards", "defensemen", "goalies"]):
+    url = f"https://api-web.nhle.com/v1/roster/{team}/{season}"
+    data = requests.get(url).json()
+    players = []
+    for pos in positions:
+        df = pd.DataFrame(data[pos])
+        players.extend(df["id"].to_list())
+    return players
+
+
+if __name__ == "__main__":
+    print(getTeamSeasonRoster("NYR", 20242025, ["forwards"]))
