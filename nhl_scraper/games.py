@@ -650,7 +650,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     home_team_id = int(pbp["homeTeamId"])
     away_team_id = int(pbp["awayTeamId"])
 
-    # Assign stints to shots
     shots["stint_idx"] = shots["timeInPeriod"].apply(
         lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
         if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
@@ -711,7 +710,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     for col in stat_cols:
         boxscore[col] = 0.0
 
-    # EXPLODE SHIFTS TO STINTS
     player_stints = player_shifts[["playerId", "teamId", "stintIds"]].explode(
         "stintIds"
     )
@@ -720,7 +718,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     )
     player_stints["toi"] = player_stints["end"] - player_stints["start"]
 
-    # MAP SITUATION
     stint_sit = shots.groupby("stint_idx")["situationCode"].first()
     player_stints["situationCode"] = player_stints["stintIds"].map(stint_sit)
     player_stints["situation"] = player_stints.apply(
@@ -730,59 +727,32 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         axis=1,
     )
 
-    # BUILD STINT METRICS
-    stint_metrics = {}
-    for idx, stint in stints.iterrows():
-        stint_shots = shots[shots["stint_idx"] == idx]
+    shots["is_sog"] = shots["typeDescKey"].isin(["shot-on-goal", "goal"])
+    shots["is_goal"] = shots["typeDescKey"].eq("goal")
 
-        if stint_shots.empty:
-            stint_metrics[idx] = {
-                "ff_home": 0,
-                "fa_home": 0,
-                "xgf_home": 0,
-                "xga_home": 0,
-                "sogf_home": 0,
-                "soga_home": 0,
-                "gf_home": 0,
-                "ga_home": 0,
-            }
-            continue
+    # Build aggregations per stint_idx
+    agg = shots.groupby("stint_idx").agg(
+        ff_home=("isHome", "sum"),  # all home shots
+        fa_home=("isHome", lambda x: (~x).sum()),  # all away shots
+        sogf_home=(["isHome", "is_sog"], lambda x: (x["isHome"] & x["is_sog"]).sum()),
+        soga_home=(
+            ["isHome", "is_sog"],
+            lambda x: ((~x["isHome"]) & x["is_sog"]).sum(),
+        ),
+        gf_home=(["isHome", "is_goal"], lambda x: (x["isHome"] & x["is_goal"]).sum()),
+        ga_home=(
+            ["isHome", "is_goal"],
+            lambda x: ((~x["isHome"]) & x["is_goal"]).sum(),
+        ),
+        xgf_home=(["isHome", "xG"], lambda x: x.loc[x["isHome"], "xG"].sum()),
+        xga_home=(["isHome", "xG"], lambda x: x.loc[~x["isHome"], "xG"].sum()),
+    )
 
-        cf_home = stint_shots[stint_shots["isHome"]].shape[0]
-        ca_home = stint_shots[~stint_shots["isHome"]].shape[0]
+    # Guarantee all stint indices exist
+    agg = agg.reindex(stints.index, fill_value=0)
 
-        sogf_home = stint_shots[
-            (stint_shots["isHome"])
-            & (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
-        ].shape[0]
-
-        soga_home = stint_shots[
-            (~stint_shots["isHome"])
-            & (stint_shots["typeDescKey"].isin(["shot-on-goal", "goal"]))
-        ].shape[0]
-
-        gf_home = stint_shots[
-            (stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
-        ].shape[0]
-
-        ga_home = stint_shots[
-            (~stint_shots["isHome"]) & (stint_shots["typeDescKey"] == "goal")
-        ].shape[0]
-
-        xgf = stint_shots[(stint_shots["isHome"])]["xG"].sum()
-        xga = stint_shots[(~stint_shots["isHome"])]["xG"].sum()
-        stint_metrics[idx] = {
-            "ff_home": cf_home,
-            "fa_home": ca_home,
-            "sogf_home": sogf_home,
-            "soga_home": soga_home,
-            "xgf_home": xgf,
-            "xga_home": xga,
-            "gf_home": gf_home,
-            "ga_home": ga_home,
-        }
-
-    stint_metrics = pd.DataFrame.from_dict(stint_metrics, orient="index")
+    # Convert to dict if needed
+    stint_metrics = agg.to_dict("index")
 
     player_stints = player_stints.merge(
         stint_metrics, left_on="stintIds", right_index=True, how="left"
@@ -1165,31 +1135,22 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
             owner = int(f["teamId"].iloc[0])
             stint_zone[idx] = {"zone": z, "owner": owner}
 
-    # Convert to DataFrame
     stint_zone = pd.DataFrame.from_dict(stint_zone, orient="index").rename(
         columns={"zone": "raw_zone", "owner": "faceoff_owner"}
     )
 
-    # Merge into home_stints / away_stints
     home_stints = home_stints.merge(stint_zone, left_index=True, right_index=True)
     away_stints = away_stints.merge(stint_zone, left_index=True, right_index=True)
 
-    # Adjust zone for home and away relative positions
     def map_zone(raw_zone, owner, is_home_view):
         if raw_zone == "FLY" or raw_zone == "N" or owner is None:
             return raw_zone
-
-        # raw_zone is D or O from faceoff owner's perspective
-        # If viewing team == owner, keep zone
         if is_home_view == (owner == home_team_id):
             return raw_zone
-
-        # Opposite team sees the inverse O<->D
         if raw_zone == "O":
             return "D"
         elif raw_zone == "D":
             return "O"
-
         return raw_zone
 
     home_stints["zone"] = home_stints.apply(
@@ -1200,8 +1161,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         lambda r: map_zone(r["raw_zone"], r["faceoff_owner"], False), axis=1
     )
 
-    # home_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
-    # away_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
     def assign_stint_manpower(stints_df, events_df, home_team_id):
         stints_df["manpower"] = pd.NA
 
@@ -1219,7 +1178,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
         return stints_df
 
-    # Apply to home and away stints
     home_stints = assign_stint_manpower(
         home_stints, pd.concat([shots, plays]), home_team_id
     )
@@ -1231,27 +1189,21 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         if "manpower" not in stints_df.columns:
             stints_df["manpower"] = pd.NA
 
-        # Consider only events that are NOT penalties (these give the next manpower)
         non_penalty_events = other_events[
             other_events["typeDescKey"] != "penalty"
         ].sort_values("timeInPeriod")
 
         for _, pen in penalty_events.sort_values("timeInPeriod").iterrows():
-            # Find the next non-penalty event after the penalty
             next_event = non_penalty_events[
                 non_penalty_events["timeInPeriod"] >= pen["timeInPeriod"]
             ].head(1)
             if next_event.empty:
-                continue  # nothing to propagate
+                continue
             ev = next_event.iloc[0]
-            manpower_to_propagate = getSituation(
-                ev["situationCode"], True
-            )  # True = home perspective
+            manpower_to_propagate = getSituation(ev["situationCode"], True)
 
-            # Determine end of propagation window: penalty duration or goal (whichever comes first)
             penalty_end = pen["timeInPeriod"] + pen["duration"]
 
-            # Stop propagation at a goal if it occurs within the penalty
             goals = non_penalty_events[
                 (non_penalty_events["typeDescKey"] == "goal")
                 & (non_penalty_events["timeInPeriod"] >= pen["timeInPeriod"])
@@ -1260,7 +1212,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
             if not goals.empty:
                 penalty_end = min(goals["timeInPeriod"].min(), penalty_end)
 
-            # Apply manpower to all overlapping stints that are NA
             mask = (
                 (stints_df["start"] < penalty_end)
                 & (stints_df["end"] > pen["timeInPeriod"])
@@ -1270,7 +1221,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
         return stints_df
 
-    # Apply to home and away stints
     penalty_events = plays[plays["typeDescKey"] == "penalty"]
     all_events = pd.concat([shots, plays])
     home_stints = update_manpower_penalty(
@@ -1285,7 +1235,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     home_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
     away_stints = away_stints.drop(columns=["raw_zone", "faceoff_owner"])
-    away_stints = away_stints.drop(columns=["raw_zone", "faceoff_owner"])
+
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
