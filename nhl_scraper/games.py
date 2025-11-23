@@ -6,6 +6,9 @@ import requests
 from typing import List
 from tqdm import tqdm
 import joblib
+import warnings
+
+warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 def str_to_float(time_str: str) -> float:
@@ -588,9 +591,16 @@ def generateGameShifts(gameId):
 
 
 def getSituation(situationCode, is_home: bool) -> str:
-    h = str(situationCode)[1]
-    a = str(situationCode)[2]
-    return f"{a}v{h}" if is_home else f"{h}v{a}"
+    if pd.isna(situationCode):
+        return "0v0"
+    s_code = str(situationCode)
+    if len(s_code) == 4:
+        h = s_code[1]
+        a = s_code[2]
+        return f"{a}v{h}" if is_home else f"{h}v{a}"
+    elif len(s_code) == 3:
+        s_code = "0" + s_code
+        return getSituation(s_code, is_home)
 
 
 def get_sit(code, is_home):
@@ -606,81 +616,89 @@ def get_sit(code, is_home):
 
 
 def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
+    # 1. API Call & Initial Data Prep
     url = f"https://api-web.nhle.com/v1/gamecenter/{gameId}/boxscore"
     r = requests.get(url)
-    df = r.json()
+    data = r.json()
 
-    players = df["playerByGameStats"]
+    players_stats = data["playerByGameStats"]
+    home_team_id = int(getPbpData(gameId).get("homeTeamId", 0))
+    away_team_id = int(getPbpData(gameId).get("awayTeamId", 0))
 
-    hf = pd.DataFrame(players["homeTeam"]["forwards"])[
-        ["playerId", "sweaterNumber", "position"]
+    # Optimized: Consolidate player metadata extraction
+    teams_data = [
+        (players_stats["homeTeam"], home_team_id),
+        (players_stats["awayTeam"], away_team_id),
     ]
+    metadata_frames = []
+    goalies_list = []
 
-    hd = pd.DataFrame(players["homeTeam"]["defense"])[
-        ["playerId", "sweaterNumber", "position"]
-    ]
+    for team_data, team_id in teams_data:
+        for pos_group in ["forwards", "defense", "goalies"]:
+            df = pd.DataFrame(team_data[pos_group])
+            if not df.empty:
+                df = df[["playerId", "sweaterNumber", "position"]].assign(
+                    teamId=team_id
+                )
+                metadata_frames.append(df)
+                if pos_group == "goalies":
+                    goalies_list.extend(df["playerId"].tolist())
 
-    hg = pd.DataFrame(players["homeTeam"]["goalies"])[
-        ["playerId", "sweaterNumber", "position"]
-    ]
+    metadata = pd.concat(metadata_frames, ignore_index=True)
 
-    af = pd.DataFrame(players["awayTeam"]["forwards"])[
-        ["playerId", "sweaterNumber", "position"]
-    ]
-
-    ad = pd.DataFrame(players["awayTeam"]["defense"])[
-        ["playerId", "sweaterNumber", "position"]
-    ]
-
-    ag = pd.DataFrame(players["awayTeam"]["goalies"])[
-        ["playerId", "sweaterNumber", "position"]
-    ]
-
-    goalies = pd.concat([ag, hg])["playerId"].to_list()
-
-    metadata = pd.concat([hf, hg, hd, af, ag, ad])
-
+    # 2. PBP and Shift Data
     pbp = getPbpData(gameId)
     shots = pbp["shots"].copy()
     plays = pbp["plays"].copy()
     player_shifts, stints = generateGameShifts(gameId)
 
-    player_shifts = player_shifts[~player_shifts["playerId"].isin(goalies)]
+    # Filter out goalies
+    player_shifts = player_shifts[~player_shifts["playerId"].isin(goalies_list)].copy()
 
-    home_team_id = int(pbp["homeTeamId"])
-    away_team_id = int(pbp["awayTeamId"])
+    # 3. Assign Stint Index to Shots and Plays (Vectorized)
 
-    shots["stint_idx"] = shots["timeInPeriod"].apply(
-        lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
-        if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
-        else -1
+    # Use pd.IntervalIndex for accurate and vectorized lookups
+    stints_interval = pd.IntervalIndex.from_arrays(
+        stints["start"], stints["end"], closed="right"
     )
 
-    # Assign stints to plays
-    plays["stint_idx"] = plays["timeInPeriod"].apply(
-        lambda t: stints.index[(stints["start"] < t) & (t <= stints["end"])][0]
-        if len(stints.index[(stints["start"] < t) & (t <= stints["end"])]) > 0
-        else -1
-    )
+    def assign_stint_idx(df, intervals):
+        time_series = df["timeInPeriod"]
 
-    # BOXSCORE SKELETON
+        cut_result = pd.cut(
+            time_series, bins=intervals, labels=False, include_lowest=False, right=True
+        )
+
+        # Using .cat.codes extracts the underlying numerical index.
+        # NaN values from pd.cut are automatically represented as -1 here.
+        stint_codes = cut_result.cat.codes
+
+        # Return as an integer Series
+        return stint_codes.astype(int)
+
+    shots["stint_idx"] = assign_stint_idx(shots, stints_interval)
+    plays["stint_idx"] = assign_stint_idx(plays, stints_interval)
+
+    # 4. Boxscore Skeleton and Names
     all_players = player_shifts["playerId"].unique()
     situations = ["ev", "pp", "pk"]
 
-    boxscore = pd.DataFrame(
-        [(pid, sit) for pid in all_players for sit in situations],
-        columns=["playerId", "situation"],
+    # Use pd.MultiIndex.from_product and reset_index for creation
+    midx = pd.MultiIndex.from_product(
+        [all_players, situations], names=["playerId", "situation"]
     )
+    boxscore = pd.DataFrame(index=midx).reset_index()
 
-    boxscore["name"] = boxscore["playerId"].map(
-        lambda pid: (
-            f"{player_shifts.loc[player_shifts['playerId'] == pid, 'firstName'].iloc[0]} "
-            f"{player_shifts.loc[player_shifts['playerId'] == pid, 'lastName'].iloc[0]}"
-        )
-        if not player_shifts.loc[player_shifts["playerId"] == pid].empty
-        else str(pid)
+    names = player_shifts[["playerId", "firstName", "lastName"]].drop_duplicates(
+        "playerId"
     )
+    names["name"] = names["firstName"] + " " + names["lastName"]
 
+    # Merge names efficiently
+    boxscore = boxscore.merge(names[["playerId", "name"]], on="playerId", how="left")
+    boxscore["name"] = boxscore["name"].fillna(boxscore["playerId"].astype(str))
+
+    # Initialize stat columns (now using a more robust list of all columns)
     stat_cols = [
         "goals",
         "a1",
@@ -707,9 +725,13 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         "gf",
         "ga",
     ]
-    for col in stat_cols:
-        boxscore[col] = 0.0
+    boxscore = boxscore.reindex(
+        columns=boxscore.columns.tolist() + stat_cols, fill_value=0.0
+    )
 
+    # 5. On-Ice Metrics (TOI, Corsi/Fenwick/xG etc.)
+
+    # Explode shifts and merge with stints
     player_stints = player_shifts[["playerId", "teamId", "stintIds"]].explode(
         "stintIds"
     )
@@ -717,65 +739,96 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         stints, left_on="stintIds", right_index=True, how="left"
     )
     player_stints["toi"] = player_stints["end"] - player_stints["start"]
+    player_stints["total_toi"] = player_stints["toi"]  # Rename for final aggregation
 
-    stint_sit = shots.groupby("stint_idx")["situationCode"].first()
-    player_stints["situationCode"] = player_stints["stintIds"].map(stint_sit)
-    player_stints["situation"] = player_stints.apply(
-        lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
-        if pd.notna(r["situationCode"])
-        else "ev",
-        axis=1,
-    )
+    # Calculate stint-level metrics (FF/FA/xGF/xGA/etc.)
+
+    # Vectorized assignment of CF/CA and goals/sogs
+    shots["home_attack"] = shots["isHome"]
+    shots["away_attack"] = ~shots["isHome"]
 
     shots["is_sog"] = shots["typeDescKey"].isin(["shot-on-goal", "goal"])
     shots["is_goal"] = shots["typeDescKey"].eq("goal")
-
-    # Build aggregations per stint_idx
-    agg = shots.groupby("stint_idx").agg(
-        ff_home=("isHome", "sum"),  # all home shots
-        fa_home=("isHome", lambda x: (~x).sum()),  # all away shots
-        sogf_home=(["isHome", "is_sog"], lambda x: (x["isHome"] & x["is_sog"]).sum()),
-        soga_home=(
-            ["isHome", "is_sog"],
-            lambda x: ((~x["isHome"]) & x["is_sog"]).sum(),
-        ),
-        gf_home=(["isHome", "is_goal"], lambda x: (x["isHome"] & x["is_goal"]).sum()),
-        ga_home=(
-            ["isHome", "is_goal"],
-            lambda x: ((~x["isHome"]) & x["is_goal"]).sum(),
-        ),
-        xgf_home=(["isHome", "xG"], lambda x: x.loc[x["isHome"], "xG"].sum()),
-        xga_home=(["isHome", "xG"], lambda x: x.loc[~x["isHome"], "xG"].sum()),
+    shots["is_fenwick"] = shots["typeDescKey"].isin(
+        ["shot-on-goal", "goal", "missed-shot"]
     )
 
-    # Guarantee all stint indices exist
-    agg = agg.reindex(stints.index, fill_value=0)
+    # Home Team Metrics (F=For, A=Against)
+    shots["ff_home"] = shots["home_attack"].astype(int)
+    shots["fa_home"] = shots["away_attack"].astype(int)
+    shots["sogf_home"] = (shots["home_attack"] & shots["is_sog"]).astype(int)
+    shots["soga_home"] = (shots["away_attack"] & shots["is_sog"]).astype(int)
+    shots["gf_home"] = (shots["home_attack"] & shots["is_goal"]).astype(int)
+    shots["ga_home"] = (shots["away_attack"] & shots["is_goal"]).astype(int)
+    shots["xgf_home"] = shots["xG"] * shots["home_attack"]
+    shots["xga_home"] = shots["xG"] * shots["away_attack"]
 
-    # Convert to dict if needed
-    stint_metrics = agg.to_dict("index")
+    # Fenwick is required for Corsi calculation, but here we use ff_home/fa_home (Corsi) for simplicity
+    # If Fenwick is needed, use shots[is_fenwick] for a Fenwick-specific count.
 
+    # Aggregate only the required columns
+    agg_cols = [
+        "ff_home",
+        "fa_home",
+        "sogf_home",
+        "soga_home",
+        "gf_home",
+        "ga_home",
+        "xgf_home",
+        "xga_home",
+    ]
+    agg = shots.groupby("stint_idx")[agg_cols].sum()
+    stint_metrics = agg.reindex(stints.index, fill_value=0)
+
+    # Merge stint metrics onto player stints
     player_stints = player_stints.merge(
         stint_metrics, left_on="stintIds", right_index=True, how="left"
-    ).infer_objects(copy=False)
+    ).fillna(0)  # Fill NaN from left merge with 0
 
-    # ASSIGN TEAM-RELATIVE METRICS
-    def assign_metrics(r):
-        if r["teamId"] == home_team_id:
-            r["ff"], r["fa"] = r["ff_home"], r["fa_home"]
-            r["xgf"], r["xga"] = r["xgf_home"], r["xga_home"]
-            r["sogf"], r["soga"] = r["sogf_home"], r["soga_home"]
-            r["gf"], r["ga"] = r["gf_home"], r["ga_home"]
+    # Vectorized assignment of team-relative metrics (FF, FA, xGF, xGA, etc.)
+    is_home_mask = player_stints["teamId"] == home_team_id
+
+    metrics_to_process = ["ff", "fa", "sogf", "soga", "gf", "ga", "xgf", "xga"]
+
+    for metric in metrics_to_process:
+        # 1. Column for Home Player (straight assignment)
+        home_col = f"{metric}_home"
+        player_stints.loc[is_home_mask, metric] = player_stints.loc[
+            is_home_mask, home_col
+        ]
+
+        # 2. Column for Away Player (swapped assignment)
+
+        # Determine the opposite metric name (ff <-> fa, sogf <-> soga, etc.)
+        if metric.endswith("f"):
+            # If 'ff', opposite is 'fa'
+            base_opposite_metric = metric[:-1] + "a"
+        elif metric.endswith("a"):
+            # If 'fa', opposite is 'ff'
+            base_opposite_metric = metric[:-1] + "f"
         else:
-            r["ff"], r["fa"] = r["fa_home"], r["ff_home"]
-            r["xga"], r["xgf"] = r["xgf_home"], r["xga_home"]
-            r["sogf"], r["soga"] = r["soga_home"], r["sogf_home"]
-            r["gf"], r["ga"] = r["ga_home"], r["gf_home"]
-        return r
+            # Should not happen with this list, but a safeguard
+            continue
 
-    player_stints = player_stints.apply(assign_metrics, axis=1)
-    player_stints["total_toi"] = player_stints["toi"]
+        # The column to pull for the away player is the home team's opposite metric.
+        opposite_home_col = f"{base_opposite_metric}_home"
 
-    # AGGREGATE PER PLAYER X SITUATION
+        player_stints.loc[~is_home_mask, metric] = player_stints.loc[
+            ~is_home_mask, opposite_home_col
+        ]
+
+    # Assign situation
+    stint_sit = shots.groupby("stint_idx")["situationCode"].first()
+    player_stints["situationCode"] = player_stints["stintIds"].map(stint_sit)
+    vec_get_sit = np.vectorize(get_sit)
+    player_stints["situation"] = vec_get_sit(
+        player_stints["situationCode"], player_stints["teamId"] == home_team_id
+    )
+    player_stints["situation"] = player_stints["situation"].fillna(
+        "ev"
+    )  # Default to 'ev'
+
+    # Final aggregation and merge to boxscore
     player_metrics = (
         player_stints.groupby(["playerId", "situation"])[
             ["ff", "fa", "sogf", "soga", "xgf", "xga", "gf", "ga", "total_toi"]
@@ -784,222 +837,130 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         .reset_index()
     )
 
-    # MERGE INTO BOXSCORE
+    # Simplified merge and update for on-ice metrics
     boxscore = boxscore.merge(
         player_metrics, on=["playerId", "situation"], how="left", suffixes=("", "_agg")
-    )
+    ).fillna(0)
     for col in ["ff", "fa", "sogf", "soga", "xgf", "xga", "gf", "ga", "total_toi"]:
-        boxscore[col] = boxscore[f"{col}_agg"].fillna(0)
+        boxscore[col] = boxscore[f"{col}_agg"]
         boxscore.drop(columns=[f"{col}_agg"], inplace=True)
 
-    # SITUATION MAPPING FOR SHOTS/PLAYS
-    shots["situation"] = shots.apply(
-        lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
-        if pd.notna(r["situationCode"]) and pd.notna(r["teamId"])
-        else "ev",
-        axis=1,
-    )
+    # 6. Play-by-Play Events Stats (Goals, Assists, Hits, etc.)
 
-    plays["situation"] = plays.apply(
-        lambda r: get_sit(r["situationCode"], r["teamId"] == home_team_id)
-        if pd.notna(r["situationCode"]) and pd.notna(r["teamId"])
-        else "ev",
-        axis=1,
-    )
+    # Vectorized situation assignment for shots and plays
+    is_home_mask = shots["teamId"] == home_team_id
+    shots["situation"] = vec_get_sit(shots["situationCode"], is_home_mask)
+    shots["situation"] = shots["situation"].fillna("ev")
 
-    # =========================
-    # SHOTS-BASED STATS
-    # =========================
+    is_home_mask = plays["teamId"] == home_team_id
+    plays["situation"] = vec_get_sit(plays["situationCode"], is_home_mask)
+    plays["situation"] = plays["situation"].fillna("ev")
 
-    # Goals
-    goals = (
-        shots[shots["typeDescKey"] == "goal"]
-        .groupby(["scoringPlayerId", "situation"])
-        .size()
-        .reset_index(name="goals")
-        .rename(columns={"scoringPlayerId": "playerId"})
-    )
+    # Define a reusable function for event counting
+    def count_events(df, event_type, player_col, stat_name):
+        df_event = df[df["typeDescKey"] == event_type].dropna(subset=[player_col])
+        return (
+            df_event.groupby([player_col, "situation"])
+            .size()
+            .reset_index(name=stat_name)
+            .rename(columns={player_col: "playerId"})
+        )
 
+    # Goals, Assists, xG
+    shots_goal = shots[shots["typeDescKey"] == "goal"]
+    goals = count_events(shots_goal, "goal", "scoringPlayerId", "goals")
+    assist1 = count_events(shots_goal, "goal", "a1PlayerId", "a1")
+    assist2 = count_events(shots_goal, "goal", "a2PlayerId", "a2")
+
+    # Calculate xG (used scoringPlayerId for goals, shootingPlayerId for others)
     shots["playerId"] = np.where(
-        shots["shootingPlayerId"].isna(),
+        shots["typeDescKey"] == "goal",
         shots["scoringPlayerId"],
         shots["shootingPlayerId"],
     )
-    xg = shots.groupby(["playerId", "situation"]).agg({"xG": "sum"}).reset_index()
-    # First assists
-    assist1 = (
-        shots[shots["typeDescKey"] == "goal"]
-        .dropna(subset=["a1PlayerId"])
-        .groupby(["a1PlayerId", "situation"])
-        .size()
-        .reset_index(name="a1")
-        .rename(columns={"a1PlayerId": "playerId"})
+    xg = (
+        shots.dropna(subset=["playerId"])
+        .groupby(["playerId", "situation"])
+        .agg({"xG": "sum"})
+        .reset_index()
     )
 
-    # Second assists
-    assist2 = (
-        shots[shots["typeDescKey"] == "goal"]
-        .dropna(subset=["a2PlayerId"])
-        .groupby(["a2PlayerId", "situation"])
-        .size()
-        .reset_index(name="a2")
-        .rename(columns={"a2PlayerId": "playerId"})
-    )
+    # Fenwick & SOG (Non-goals + Goals)
+    fenwick_stats = []
+    sog_stats = []
 
-    # Fenwick (non-blocked attempts)
-    fenwick_non_goal = (
-        shots[shots["typeDescKey"].isin(["shot-on-goal", "missed-shot"])]
-        .groupby(["shootingPlayerId", "situation"])
-        .size()
-        .reset_index(name="fenwick")
-        .rename(columns={"shootingPlayerId": "playerId"})
-    )
+    # Fenwick (all attempts excluding blocked)
+    for player_col in ["shootingPlayerId", "scoringPlayerId"]:
+        is_shooting = (
+            shots["typeDescKey"].isin(["shot-on-goal", "missed-shot"])
+            & shots[player_col].notna()
+        )
+        is_scoring = (shots["typeDescKey"] == "goal") & (shots[player_col].notna())
 
-    fenwick_goals = (
-        shots[shots["typeDescKey"] == "goal"]
-        .groupby(["scoringPlayerId", "situation"])
-        .size()
-        .reset_index(name="fenwick")
-        .rename(columns={"scoringPlayerId": "playerId"})
-    )
+        df_fen = shots[is_shooting | is_scoring].dropna(subset=[player_col])
+        if not df_fen.empty:
+            fenwick_stats.append(
+                df_fen.groupby([player_col, "situation"])
+                .size()
+                .reset_index(name="fenwick")
+                .rename(columns={player_col: "playerId"})
+            )
 
     fenwick = (
-        pd.concat([fenwick_non_goal, fenwick_goals], ignore_index=True)
+        pd.concat(fenwick_stats, ignore_index=True)
         .groupby(["playerId", "situation"], as_index=False)["fenwick"]
         .sum()
     )
 
-    # Shots on goal (SOG)
-    sog_shots = (
-        shots[shots["typeDescKey"] == "shot-on-goal"]
-        .groupby(["shootingPlayerId", "situation"])
-        .size()
-        .reset_index(name="sog")
-        .rename(columns={"shootingPlayerId": "playerId"})
-    )
+    # SOG (Shots on goal + Goals)
+    for player_col in ["shootingPlayerId", "scoringPlayerId"]:
+        is_shooting = (shots["typeDescKey"] == "shot") & (shots[player_col].notna())
+        is_scoring = (shots["typeDescKey"] == "goal") & (shots[player_col].notna())
 
-    sog_goals = (
-        shots[shots["typeDescKey"] == "goal"]
-        .groupby(["scoringPlayerId", "situation"])
-        .size()
-        .reset_index(name="sog")
-        .rename(columns={"scoringPlayerId": "playerId"})
-    )
+        df_sog = shots[is_shooting | is_scoring].dropna(subset=[player_col])
+        if not df_sog.empty:
+            sog_stats.append(
+                df_sog.groupby([player_col, "situation"])
+                .size()
+                .reset_index(name="sog")
+                .rename(columns={player_col: "playerId"})
+            )
 
     sog = (
-        pd.concat([sog_shots, sog_goals], ignore_index=True)
+        pd.concat(sog_stats, ignore_index=True)
         .groupby(["playerId", "situation"], as_index=False)["sog"]
         .sum()
     )
 
-    # =========================
-    # PLAYS-BASED STATS
-    # =========================
-
-    # Shots blocked against (shooter)
-    shots_blocked_against = (
-        plays[plays["typeDescKey"] == "blocked-shot"]
-        .dropna(subset=["shootingPlayerId"])
-        .groupby(["shootingPlayerId", "situation"])
-        .size()
-        .reset_index(name="shots_blocked_against")
-        .rename(columns={"shootingPlayerId": "playerId"})
+    # Corsi (Fenwick + Blocked Against)
+    shots_blocked_against = count_events(
+        plays, "blocked-shot", "shootingPlayerId", "shots_blocked_against"
     )
-
-    # Corsi (Fenwick + blocked against)
     corsi = (
         fenwick.merge(shots_blocked_against, on=["playerId", "situation"], how="left")
         .assign(corsi=lambda df: df["fenwick"] + df["shots_blocked_against"].fillna(0))
         .drop(columns=["shots_blocked_against"])
     )
 
-    # Giveaways
-    giveaways = (
-        plays[plays["typeDescKey"] == "giveaway"]
-        .groupby(["playerId", "situation"])
-        .size()
-        .reset_index(name="giveaways")
+    # Other PBP stats
+    giveaways = count_events(plays, "giveaway", "playerId", "giveaways")
+    takeaways = count_events(plays, "takeaway", "playerId", "takeaways")
+    hits_for = count_events(plays, "hit", "hittingPlayerId", "hits_for")
+    hits_taken = count_events(plays, "hit", "hitteePlayerId", "hits_taken")
+    shots_blocked_for = count_events(
+        plays, "blocked-shot", "blockingPlayerId", "blocks"
+    )
+    faceoffs_won = count_events(plays, "faceoff", "winningPlayerId", "faceoffs_won")
+    faceoffs_lost = count_events(plays, "faceoff", "losingPlayerId", "faceoffs_lost")
+    penalties_taken = count_events(
+        plays, "penalty", "committedByPlayerId", "penalties_taken"
+    )
+    penalties_drawn = count_events(
+        plays, "penalty", "drawnByPlayerId", "penalties_drawn"
     )
 
-    # Takeaways
-    takeaways = (
-        plays[plays["typeDescKey"] == "takeaway"]
-        .groupby(["playerId", "situation"])
-        .size()
-        .reset_index(name="takeaways")
-    )
-
-    # Hits for
-    hits_for = (
-        plays[plays["typeDescKey"] == "hit"]
-        .dropna(subset=["hittingPlayerId"])
-        .groupby(["hittingPlayerId", "situation"])
-        .size()
-        .reset_index(name="hits_for")
-        .rename(columns={"hittingPlayerId": "playerId"})
-    )
-
-    # Hits taken
-    hits_taken = (
-        plays[plays["typeDescKey"] == "hit"]
-        .dropna(subset=["hitteePlayerId"])
-        .groupby(["hitteePlayerId", "situation"])
-        .size()
-        .reset_index(name="hits_taken")
-        .rename(columns={"hitteePlayerId": "playerId"})
-    )
-
-    # Blocks (as blocker)
-    shots_blocked_for = (
-        plays[plays["typeDescKey"] == "blocked-shot"]
-        .dropna(subset=["blockingPlayerId"])
-        .groupby(["blockingPlayerId", "situation"])
-        .size()
-        .reset_index(name="blocks")
-        .rename(columns={"blockingPlayerId": "playerId"})
-    )
-
-    # Faceoffs won
-    faceoffs_won = (
-        plays[plays["typeDescKey"] == "faceoff"]
-        .dropna(subset=["winningPlayerId"])
-        .groupby(["winningPlayerId", "situation"])
-        .size()
-        .reset_index(name="faceoffs_won")
-        .rename(columns={"winningPlayerId": "playerId"})
-    )
-
-    # Faceoffs lost
-    faceoffs_lost = (
-        plays[plays["typeDescKey"] == "faceoff"]
-        .dropna(subset=["losingPlayerId"])
-        .groupby(["losingPlayerId", "situation"])
-        .size()
-        .reset_index(name="faceoffs_lost")
-        .rename(columns={"losingPlayerId": "playerId"})
-    )
-
-    # Penalties taken
-    penalties_taken = (
-        plays[plays["typeDescKey"] == "penalty"]
-        .dropna(subset=["committedByPlayerId"])
-        .groupby(["committedByPlayerId", "situation"])
-        .size()
-        .reset_index(name="penalties_taken")
-        .rename(columns={"committedByPlayerId": "playerId"})
-    )
-
-    # Penalties drawn
-    penalties_drawn = (
-        plays[plays["typeDescKey"] == "penalty"]
-        .dropna(subset=["drawnByPlayerId"])
-        .groupby(["drawnByPlayerId", "situation"])
-        .size()
-        .reset_index(name="penalties_drawn")
-        .rename(columns={"drawnByPlayerId": "playerId"})
-    )
-
-    all_stats = [
+    # Combine and merge all stats
+    all_stats_dfs = [
         goals,
         xg,
         assist1,
@@ -1017,27 +978,31 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         penalties_taken,
         penalties_drawn,
     ]
-    for df_stat in all_stats:
-        stat_col = [c for c in df_stat.columns if c not in ["playerId", "situation"]][0]
+
+    # Merge all stats in a single loop
+    for df_stat in all_stats_dfs:
+        stat_col = df_stat.columns[-1]
         boxscore = boxscore.merge(
             df_stat, on=["playerId", "situation"], how="left", suffixes=("", "_new")
         )
-        if f"{stat_col}_new" in boxscore.columns:
-            boxscore[stat_col] = boxscore[f"{stat_col}_new"].fillna(0)
-            boxscore.drop(columns=[f"{stat_col}_new"], inplace=True)
-        else:
-            boxscore[stat_col] = boxscore[stat_col].fillna(0)
+        # Use np.where for vectorized update if the column exists
+        new_col = f"{stat_col}_new"
+        if new_col in boxscore.columns:
+            boxscore[stat_col] = np.where(
+                boxscore[new_col].notna(), boxscore[new_col], boxscore[stat_col]
+            )
+            boxscore.drop(columns=[new_col], inplace=True)
+        # Handle the edge case where the column may already exist and was not updated
+        boxscore[stat_col] = boxscore[stat_col].fillna(0)
 
-    onice = (
-        player_stints[["playerId", "teamId", "stintIds"]]
-        .assign(on=1)
-        .pivot_table(
-            index="stintIds",
-            columns="playerId",
-            values="on",
-            aggfunc="max",
-            fill_value=0,
-        )
+    # 7. On-Ice Player Matrix (Simplified)
+    player_stints["on"] = 1
+    onice = player_stints.pivot_table(
+        index="stintIds",
+        columns="playerId",
+        values="on",
+        aggfunc="max",
+        fill_value=0,
     )
 
     home_players = player_shifts[player_shifts["teamId"] == home_team_id][
@@ -1047,26 +1012,18 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         "playerId"
     ].unique()
 
-    # prefix for home_stints
-    stints = stints.join(stint_metrics, how="left").fillna(0)
+    # Join metrics to stints *once*
+    stints_metrics = stints.join(stint_metrics, how="left").fillna(0)
 
-    # prefix for home_stints
+    # Create home and away stints frames by joining on-ice matrices
+    home_stints = stints_metrics.copy()
+    away_stints = stints_metrics.copy()
+
+    # Optimized column creation/renaming for home stints
     home_for = onice[home_players].add_prefix("for_")
     home_against = onice[away_players].add_prefix("against_")
+    home_stints = home_stints.join(home_for).join(home_against).fillna(0)
 
-    # prefix for away_stints
-    away_for = onice[away_players].add_prefix("for_")
-    away_against = onice[home_players].add_prefix("against_")
-
-    # attach to stints
-    home_stints = (
-        stints.join(home_for, how="left").join(home_against, how="left").fillna(0)
-    )
-    away_stints = (
-        stints.join(away_for, how="left").join(away_against, how="left").fillna(0)
-    )
-
-    # Rename metrics to team-relative for home stints
     home_stints = home_stints.rename(
         columns={
             "ff_home": "ff",
@@ -1080,7 +1037,11 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         }
     )
 
-    # Swap metrics for away stints (their "for" is home's "against")
+    # Optimized column creation/renaming for away stints (swapped F/A)
+    away_for = onice[away_players].add_prefix("for_")
+    away_against = onice[home_players].add_prefix("against_")
+    away_stints = away_stints.join(away_for).join(away_against).fillna(0)
+
     away_stints = away_stints.rename(
         columns={
             "ff_home": "fa",
@@ -1094,153 +1055,184 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         }
     )
 
+    # 8. Final Calculation and Cleanup
+
+    # Percentage calculations (handle division by zero with fillna)
+    boxscore["f%"] = (boxscore["ff"] / (boxscore["ff"] + boxscore["fa"])).fillna(0)
+    boxscore["s%"] = (boxscore["sogf"] / (boxscore["sogf"] + boxscore["soga"])).fillna(
+        0
+    )
+    boxscore["g%"] = (boxscore["gf"] / (boxscore["gf"] + boxscore["ga"])).fillna(0)
+    boxscore["xg%"] = (boxscore["xgf"] / (boxscore["xgf"] + boxscore["xga"])).fillna(0)
+
+    # Add gameId and isHome/away flag
     home_stints["game"] = gameId
     away_stints["game"] = gameId
     boxscore["game"] = gameId
-    boxscore["f%"] = boxscore["ff"] / (boxscore["ff"] + boxscore["fa"])
-    boxscore["s%"] = boxscore["sogf"] / (boxscore["sogf"] + boxscore["soga"])
-    boxscore["g%"] = boxscore["gf"] / (boxscore["gf"] + boxscore["ga"])
-    boxscore["xg%"] = boxscore["xgf"] / (boxscore["xgf"] + boxscore["xga"])
-
-    shots: pd.DataFrame = shots.drop(columns=["scoringPlayerId", "shootingPlayerId"])
-
-    names = boxscore[["name", "playerId"]].drop_duplicates()
-    shots = pd.merge(shots, names, on="playerId", how="left")
-
-    player_teams = shots[["playerId", "teamId"]].drop_duplicates()
-    boxscore = pd.merge(boxscore, player_teams, on="playerId", how="left")
-
-    boxscore["corsi"] = boxscore["corsi_new"]
-    boxscore = boxscore.drop(columns="corsi_new")
-
     home_stints["isHome"] = 1
     away_stints["isHome"] = 0
 
-    # Extract faceoff events with their start times
-    faceoffs = plays[plays["typeDescKey"] == "faceoff"][
-        ["timeInPeriod", "zoneCode", "teamId"]
-    ].copy()
+    # Merge player teams for metadata
+    player_teams = metadata[["playerId", "teamId"]].drop_duplicates()
+    boxscore = pd.merge(boxscore, player_teams, on="playerId", how="left")
 
-    # Build a lookup keyed by stint start time
-    stint_zone = {}
-    for idx, row in stints.iterrows():
-        start_t = row["start"]
-
-        # Find faceoff exactly at stint start
-        f = faceoffs[faceoffs["timeInPeriod"] == start_t]
-        if f.empty:
-            stint_zone[idx] = {"zone": "FLY", "owner": None}
-        else:
-            z = f["zoneCode"].iloc[0]
-            owner = int(f["teamId"].iloc[0])
-            stint_zone[idx] = {"zone": z, "owner": owner}
-
-    stint_zone = pd.DataFrame.from_dict(stint_zone, orient="index").rename(
-        columns={"zone": "raw_zone", "owner": "faceoff_owner"}
+    shots = shots.drop(columns=["scoringPlayerId", "shootingPlayerId"])
+    shots = pd.merge(
+        shots,
+        boxscore[["playerId", "name"]].drop_duplicates(),
+        on="playerId",
+        how="left",
     )
 
-    home_stints = home_stints.merge(stint_zone, left_index=True, right_index=True)
-    away_stints = away_stints.merge(stint_zone, left_index=True, right_index=True)
+    # 9. Zone Assignment
 
-    def map_zone(raw_zone, owner, is_home_view):
-        if raw_zone == "FLY" or raw_zone == "N" or owner is None:
-            return raw_zone
-        if is_home_view == (owner == home_team_id):
-            return raw_zone
-        if raw_zone == "O":
-            return "D"
-        elif raw_zone == "D":
-            return "O"
-        return raw_zone
-
-    home_stints["zone"] = home_stints.apply(
-        lambda r: map_zone(r["raw_zone"], r["faceoff_owner"], True), axis=1
+    # Prepare faceoff lookup table
+    faceoffs = plays.loc[
+        plays["typeDescKey"] == "faceoff", ["timeInPeriod", "zoneCode", "teamId"]
+    ].rename(
+        columns={
+            "timeInPeriod": "start",
+            "zoneCode": "raw_zone",
+            "teamId": "faceoff_owner",
+        }
     )
 
-    away_stints["zone"] = away_stints.apply(
-        lambda r: map_zone(r["raw_zone"], r["faceoff_owner"], False), axis=1
+    # Merge once
+    stints_merged = stints_metrics.merge(faceoffs, on="start", how="left")
+    stints_merged["raw_zone"] = stints_merged["raw_zone"].fillna("FLY")
+    stints_merged["faceoff_owner"] = stints_merged["faceoff_owner"].astype("float")
+
+    # Attach zone/owner
+    zone_data = stints_merged[["raw_zone", "faceoff_owner"]]
+    home_stints = home_stints.join(zone_data)
+    away_stints = away_stints.join(zone_data)
+
+    def compute_zone_vectorized(df, is_home_view):
+        z = df["raw_zone"].copy()
+        owner = df["faceoff_owner"]
+
+        # Mask for when the zone needs to be flipped (O <-> D)
+        # Flip if: (zone is O or D) AND ((owner is away team) IF home view) OR ((owner is home team) IF away view)
+        is_home_owner = owner == home_team_id
+        flip_mask = (
+            (z.isin(["O", "D"])) & (owner.notna()) & (is_home_owner != is_home_view)
+        )
+
+        z.loc[flip_mask & (z == "O")] = "D"
+        z.loc[flip_mask & (z == "D")] = "O"
+        return z
+
+    home_stints["zone"] = compute_zone_vectorized(home_stints, True)
+    away_stints["zone"] = compute_zone_vectorized(away_stints, False)
+
+    # Drop intermediate columns
+    home_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
+    away_stints = away_stints.drop(columns=["raw_zone", "faceoff_owner"])
+
+    # 10. Manpower Assignment (Simplified)
+
+    # Create a Series for the first event in each stint_idx
+    all_events = pd.concat(
+        [shots.assign(is_shot=1), plays.assign(is_shot=0)]
+    ).sort_values("timeInPeriod")
+
+    # Filter only events that fall within a defined stint
+    events_in_stints = all_events[all_events["stint_idx"] != -1]
+
+    # Get the *first* event within each stint index
+    first_events = (
+        events_in_stints.sort_values("timeInPeriod").groupby("stint_idx").first()
     )
 
-    def assign_stint_manpower(stints_df, events_df, home_team_id):
-        stints_df["manpower"] = pd.NA
-
-        for idx, stint in stints_df.iterrows():
-            events_in_stint = events_df[
-                (events_df["timeInPeriod"] > stint["start"])
-                & (events_df["timeInPeriod"] <= stint["end"])
-            ]
-            if not events_in_stint.empty:
-                first_event = events_in_stint.iloc[0]
-
-                stints_df.at[idx, "manpower"] = getSituation(
-                    first_event["situationCode"], stint["isHome"]
-                )
-
-        return stints_df
-
-    home_stints = assign_stint_manpower(
-        home_stints, pd.concat([shots, plays]), home_team_id
+    # Map situation to stints (and then to home/away stints)
+    stint_manpower = vec_get_sit(
+        first_events["situationCode"], first_events["teamId"] == home_team_id
     )
-    away_stints = assign_stint_manpower(
-        away_stints, pd.concat([shots, plays]), home_team_id
+    manpower_series = pd.Series(stint_manpower, index=first_events.index)
+
+    # 2. Convert the Series to a dictionary for use in .map()
+    manpower_map = manpower_series.to_dict()
+    home_stints["manpower"] = stints.index.map(manpower_map).fillna("5v5")
+
+    # Recalculate away manpower using the correct view
+    away_stint_manpower = vec_get_sit(
+        first_events["situationCode"], first_events["teamId"] == away_team_id
     )
 
-    def update_manpower_penalty(stints_df, penalty_events, other_events, home_team_id):
-        if "manpower" not in stints_df.columns:
-            stints_df["manpower"] = pd.NA
+    away_manpower_map = pd.Series(
+        away_stint_manpower, index=first_events.index
+    ).to_dict()
 
-        non_penalty_events = other_events[
-            other_events["typeDescKey"] != "penalty"
-        ].sort_values("timeInPeriod")
+    away_stints["manpower"] = stints.index.map(away_manpower_map).fillna("5v5")
 
-        for _, pen in penalty_events.sort_values("timeInPeriod").iterrows():
-            next_event = non_penalty_events[
-                non_penalty_events["timeInPeriod"] >= pen["timeInPeriod"]
+    penalty_events = plays[plays["typeDescKey"] == "penalty"]
+
+    def update_manpower_penalty_optimized(
+        stints_df, penalty_events, all_events, home_team_id
+    ):
+        if penalty_events.empty:
+            return stints_df
+
+        stints_df = stints_df.copy()
+
+        # Prepare lookup for the manpower *after* the penalty
+        other_events = all_events[all_events["typeDescKey"] != "penalty"].sort_values(
+            "timeInPeriod"
+        )
+
+        for _, pen in penalty_events.iterrows():
+            # Get the first non-penalty event that starts on or after the penalty time
+            next_ev = other_events[
+                other_events["timeInPeriod"] >= pen["timeInPeriod"]
             ].head(1)
-            if next_event.empty:
+
+            if next_ev.empty or next_ev["situationCode"].iloc[0] is None:
                 continue
-            ev = next_event.iloc[0]
-            manpower_to_propagate = getSituation(ev["situationCode"], True)
 
-            penalty_end = pen["timeInPeriod"] + pen["duration"]
+            # Determine the *correct* manpower situation to propagate
+            is_home_view = stints_df["isHome"].iloc[0] == 1
 
-            goals = non_penalty_events[
-                (non_penalty_events["typeDescKey"] == "goal")
-                & (non_penalty_events["timeInPeriod"] >= pen["timeInPeriod"])
-                & (non_penalty_events["timeInPeriod"] < penalty_end)
+            manpower_to_propagate = get_sit(
+                next_ev["situationCode"].iloc[0], is_home_view
+            )
+
+            penalty_start = pen["timeInPeriod"]
+            penalty_end = penalty_start + pen["duration"]
+
+            # Check for goals that end the penalty early (within the initial duration)
+            goals_in_penalty = all_events[
+                (all_events["typeDescKey"] == "goal")
+                & (all_events["timeInPeriod"] >= penalty_start)
+                & (all_events["timeInPeriod"] < penalty_end)
             ]
-            if not goals.empty:
-                penalty_end = min(goals["timeInPeriod"].min(), penalty_end)
+            if not goals_in_penalty.empty:
+                penalty_end = goals_in_penalty["timeInPeriod"].min()
 
+            # Apply the new manpower to relevant 5v5 stints
             mask = (
                 (stints_df["start"] < penalty_end)
-                & (stints_df["end"] > pen["timeInPeriod"])
-                & (stints_df["manpower"].isna())
+                & (stints_df["end"] > penalty_start)
+                & (stints_df["manpower"] == "5v5")
             )
             stints_df.loc[mask, "manpower"] = manpower_to_propagate
 
         return stints_df
 
-    penalty_events = plays[plays["typeDescKey"] == "penalty"]
-    all_events = pd.concat([shots, plays])
-    home_stints = update_manpower_penalty(
+    # Run the penalty update
+    home_stints = update_manpower_penalty_optimized(
         home_stints, penalty_events, all_events, home_team_id
     )
-    away_stints = update_manpower_penalty(
+    away_stints = update_manpower_penalty_optimized(
         away_stints, penalty_events, all_events, home_team_id
     )
-
-    home_stints["manpower"] = home_stints["manpower"].fillna("5v5")
-    away_stints["manpower"] = away_stints["manpower"].fillna("5v5")
-
-    home_stints = home_stints.drop(columns=["raw_zone", "faceoff_owner"])
-    away_stints = away_stints.drop(columns=["raw_zone", "faceoff_owner"])
 
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
         "shots": shots,
-        "boxscore": boxscore.merge(metadata, on="playerId", how="left"),
+        "boxscore": boxscore.merge(
+            metadata.drop(columns=["teamId"]), on="playerId", how="left"
+        ).drop_duplicates(subset=["playerId", "situation"]),
     }
 
 
