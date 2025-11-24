@@ -308,9 +308,9 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
         #     vmax=diff.max(),
         # )
         if not heightmap:
-            # ga.draw_rink_features(
-            #     ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
-            # )
+            ga.draw_rink_features(
+                ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+            )
             pass
         if not xG:
             ax.set_title(

@@ -619,6 +619,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     # 1. API Call & Initial Data Prep
     url = f"https://api-web.nhle.com/v1/gamecenter/{gameId}/boxscore"
     r = requests.get(url)
+
     data = r.json()
 
     players_stats = data["playerByGameStats"]
