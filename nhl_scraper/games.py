@@ -616,7 +616,6 @@ def get_sit(code, is_home):
 
 
 def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
-    # 1. API Call & Initial Data Prep
     url = f"https://api-web.nhle.com/v1/gamecenter/{gameId}/boxscore"
     r = requests.get(url)
 
@@ -626,7 +625,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     home_team_id = int(getPbpData(gameId).get("homeTeamId", 0))
     away_team_id = int(getPbpData(gameId).get("awayTeamId", 0))
 
-    # Optimized: Consolidate player metadata extraction
     teams_data = [
         (players_stats["homeTeam"], home_team_id),
         (players_stats["awayTeam"], away_team_id),
@@ -647,7 +645,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     metadata = pd.concat(metadata_frames, ignore_index=True)
 
-    # 2. PBP and Shift Data
     pbp = getPbpData(gameId)
     shots = pbp["shots"].copy()
     plays = pbp["plays"].copy()
@@ -655,8 +652,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
     # Filter out goalies
     player_shifts = player_shifts[~player_shifts["playerId"].isin(goalies_list)].copy()
-
-    # 3. Assign Stint Index to Shots and Plays (Vectorized)
 
     # Use pd.IntervalIndex for accurate and vectorized lookups
     stints_interval = pd.IntervalIndex.from_arrays(
@@ -670,17 +665,12 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
             time_series, bins=intervals, labels=False, include_lowest=False, right=True
         )
 
-        # Using .cat.codes extracts the underlying numerical index.
-        # NaN values from pd.cut are automatically represented as -1 here.
         stint_codes = cut_result.cat.codes
-
-        # Return as an integer Series
         return stint_codes.astype(int)
 
     shots["stint_idx"] = assign_stint_idx(shots, stints_interval)
     plays["stint_idx"] = assign_stint_idx(plays, stints_interval)
 
-    # 4. Boxscore Skeleton and Names
     all_players = player_shifts["playerId"].unique()
     situations = ["ev", "pp", "pk"]
 
@@ -695,11 +685,9 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     )
     names["name"] = names["firstName"] + " " + names["lastName"]
 
-    # Merge names efficiently
     boxscore = boxscore.merge(names[["playerId", "name"]], on="playerId", how="left")
     boxscore["name"] = boxscore["name"].fillna(boxscore["playerId"].astype(str))
 
-    # Initialize stat columns (now using a more robust list of all columns)
     stat_cols = [
         "goals",
         "a1",
@@ -729,8 +717,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     boxscore = boxscore.reindex(
         columns=boxscore.columns.tolist() + stat_cols, fill_value=0.0
     )
-
-    # 5. On-Ice Metrics (TOI, Corsi/Fenwick/xG etc.)
 
     # Explode shifts and merge with stints
     player_stints = player_shifts[["playerId", "teamId", "stintIds"]].explode(
@@ -763,9 +749,6 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
     shots["ga_home"] = (shots["away_attack"] & shots["is_goal"]).astype(int)
     shots["xgf_home"] = shots["xG"] * shots["home_attack"]
     shots["xga_home"] = shots["xG"] * shots["away_attack"]
-
-    # Fenwick is required for Corsi calculation, but here we use ff_home/fa_home (Corsi) for simplicity
-    # If Fenwick is needed, use shots[is_fenwick] for a Fenwick-specific count.
 
     # Aggregate only the required columns
     agg_cols = [
