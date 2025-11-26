@@ -4,6 +4,8 @@ from scipy.ndimage import gaussian_filter
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
+from adjustText import adjust_text
+import seaborn as sns
 
 
 def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
@@ -355,4 +357,42 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
         return fig
 
     plt.tight_layout()
+    plt.show()
+
+
+def plot_rapm(df, players, x, y, xlabel, ylabel, title):
+    sns.set_style("ticks")
+    df = df.copy()
+    df["highlight"] = df["playerId"].isin(players)
+
+    g = sns.jointplot(
+        data=df, x=x, y=y, height=6, s=30, alpha=0.25, color="#505A5B", edgecolor=None
+    )
+
+    ax = g.ax_joint
+
+    ax.axhline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7, zorder=1)
+    ax.axvline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7, zorder=1)
+
+    highlight = df[df["playerId"].isin(players)]
+    highlight = highlight.drop_duplicates(subset="playerId")
+    ax.scatter(highlight[x], highlight[y], s=40, color="#6CCFF6", zorder=100)
+
+    texts = []
+    for _, row in highlight.iterrows():
+        t = ax.text(s=row["name"], x=row[x], y=row[y], fontsize=8, zorder=101)
+        texts.append(t)
+
+    adjust_text(
+        texts,
+        expand_points=(1, 1),
+        arrowprops=dict(arrowstyle="-", color="black", lw=1),
+        ax=ax,
+    )
+
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    g.fig.suptitle(title)
+    g.fig.tight_layout()
     plt.show()
