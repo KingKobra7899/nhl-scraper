@@ -8,6 +8,7 @@ from matplotlib.colors import ListedColormap
 
 def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
     df: pd.DataFrame = ga.getPbpData(game_id)["shots"]
+    df = df[df["situationCode"] == "1551"]
     teams = df["teamId"].unique()
     team1_df = df[df["teamId"] == teams[0]]
     team2_df = df[df["teamId"] == teams[1]]
@@ -62,14 +63,25 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             vmin=0,
             vmax=vmax,
         )
-        ax1.contourf(
-            density1,
-            levels=np.linspace(0, vmax, 30),
-            extent=[xmin, xmax, ymin, ymax],
-            alpha=0.6,
-            cmap="Blues",
-            vmin=0,
-            vmax=vmax,
+        team1_goals = team1_df[team1_df["typeDescKey"] == "goal"]
+        team1_shots = team1_df[team1_df["typeDescKey"] != "goal"]
+        ax1.scatter(
+            x=team1_shots["xCoord"],
+            y=team1_shots["yCoord"],
+            edgecolors="black",
+            color="#2166ac",
+            linewidth=0.75,
+            s=50,
+            marker="o",
+        )
+        ax1.scatter(
+            x=team1_goals["xCoord"],
+            y=team1_goals["yCoord"],
+            edgecolors="black",
+            color="#2166ac",
+            linewidth=0.75,
+            s=75,
+            marker="*",
         )
         if not xG:
             ax1.set_title(f"{team1_tricode} Shot Density", fontsize=14)
@@ -88,14 +100,25 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             vmin=0,
             vmax=vmax,
         )
-        ax2.contourf(
-            density2,
-            levels=np.linspace(0, vmax, 30),
-            extent=[xmin, xmax, ymin, ymax],
-            alpha=0.6,
-            cmap="Reds",
-            vmin=0,
-            vmax=vmax,
+        team2_goals = team2_df[team2_df["typeDescKey"] == "goal"]
+        team2_shots = team2_df[team2_df["typeDescKey"] != "goal"]
+        ax2.scatter(
+            x=team2_shots["xCoord"],
+            y=team2_shots["yCoord"],
+            edgecolors="black",
+            color="#b2182b",
+            linewidth=0.75,
+            s=50,
+            marker="o",
+        )
+        ax2.scatter(
+            x=team2_goals["xCoord"],
+            y=team2_goals["yCoord"],
+            edgecolors="black",
+            color="#b2182b",
+            linewidth=0.75,
+            s=75,
+            marker="*",
         )
         if not xG:
             ax2.set_title(f"{team2_tricode} Shot Density", fontsize=14)
@@ -116,7 +139,7 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             diff,
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
-            cmap="seismic",
+            cmap="RdBu",
             vmin=-diff.max(),
             vmax=diff.max(),
         )
@@ -125,23 +148,27 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
 
         team_cmap = ListedColormap(
             [
-                "red",
-                "blue",
+                "#2166ac",
+                "#b2182b",
             ]
         )
 
         # team1 should be entry 0, team2 entry 1
         df["teamIndex"] = df["teamId"].apply(lambda tid: 0 if tid == teams[0] else 1)
         goals = df[df["typeDescKey"] == "goal"]
+        ga.draw_rink_features(
+            ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
+        )
+
         ax.scatter(
             x=goals["xCoord"],
             y=goals["yCoord"],
             c=goals["teamIndex"],
             marker="*",
             cmap=team_cmap,
-            s=100,
+            s=200,
             edgecolors="black",
-            linewidths=0.4,
+            linewidths=1.0,
             alpha=1.0,
         )
 
@@ -152,14 +179,10 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             c=shots["teamIndex"],
             marker="o",
             cmap=team_cmap,
-            s=25,
+            s=75,
             edgecolors="black",
-            linewidths=0.4,
+            linewidths=1.0,
             alpha=1.0,
-        )
-
-        ga.draw_rink_features(
-            ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
         )
 
         if not xG:
