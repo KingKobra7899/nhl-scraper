@@ -81,21 +81,29 @@ def _(bs_2023, bs_2024, bs_2025, stints_2023, stints_2024, stints_2025):
     import nhl_scraper.model as m
 
     xgf_rapm_2023 = m.calculate_rapm(bs_2023, stints_2023, "xgf", "even")
+
     xga_rapm_2023 = m.calculate_rapm(bs_2023, stints_2023, "xga", "even")
     ppo_2023 = m.calculate_rapm(bs_2023, stints_2023, "xgf", "pp")
     pkd_2023 = m.calculate_rapm(bs_2023, stints_2023, "xga", "pk")
+    rapm_2023 = xgf_rapm_2023.merge(
+        xga_rapm_2023[["playerId", "even_xga"]], on="playerId"
+    ).merge(ppo_2023[["playerId", "pp_xgf"]], on="playerId").merge(
+        pkd_2023[["playerId", "pk_xga"]], on="playerId"
+    )   
+    rapm_2023 = rapm_2023.fillna(0)
+    rapm_2023.to_csv("rapm_2023.csv", index=False)
     print("2023-2024 complete")
-    xgf_rapm_2024 = m.calculate_rapm(bs_2024, stints_2024, "xgf", "even")
-    xga_rapm_2024 = m.calculate_rapm(bs_2024, stints_2024, "xga", "even")
-    ppo_2024 = m.calculate_rapm(bs_2024, stints_2024, "xgf", "pp")
-    pkd_2024 = m.calculate_rapm(bs_2024, stints_2024, "xga", "pk")
-    print("2024-2025 complete")
-    xgf_rapm_2025 = m.calculate_rapm(bs_2025, stints_2025, "xgf", "even")
-    xga_rapm_2025 = m.calculate_rapm(bs_2025, stints_2025, "xga", "even")
-    ppo_2025 = m.calculate_rapm(bs_2025, stints_2025, "xgf", "pp")
-    pkd_2025 = m.calculate_rapm(bs_2025, stints_2025, "xga", "pk")
-    print("2025-2026 complete")
-    return (xgf_rapm_2025,)
+    # xgf_rapm_2024 = m.calculate_rapm(bs_2024, stints_2024, "xgf", "even")
+    # xga_rapm_2024 = m.calculate_rapm(bs_2024, stints_2024, "xga", "even")
+    # ppo_2024 = m.calculate_rapm(bs_2024, stints_2024, "xgf", "pp")
+    # pkd_2024 = m.calculate_rapm(bs_2024, stints_2024, "xga", "pk")
+    # print("2024-2025 complete")
+    # xgf_rapm_2025 = m.calculate_rapm(bs_2025, stints_2025, "xgf", "even")
+    # xga_rapm_2025 = m.calculate_rapm(bs_2025, stints_2025, "xga", "even")
+    # ppo_2025 = m.calculate_rapm(bs_2025, stints_2025, "xgf", "pp")
+    # pkd_2025 = m.calculate_rapm(bs_2025, stints_2025, "xga", "pk")
+    # print("2025-2026 complete")
+    return
 
 
 @app.cell
