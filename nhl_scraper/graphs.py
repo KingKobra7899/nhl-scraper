@@ -10,7 +10,7 @@ import seaborn as sns
 
 def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
     df: pd.DataFrame = ga.getPbpData(game_id)["shots"]
-    df = df[df["situationCode"] == "1551"]
+    
     teams = df["teamId"].unique()
     team1_df = df[df["teamId"] == teams[0]]
     team2_df = df[df["teamId"] == teams[1]]
@@ -52,7 +52,7 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
     density1 = gaussian_filter(H1.T, sigma=sigma * 3)
     density2 = gaussian_filter(H2.T, sigma=sigma * 3)
     diff = density1 - density2
-    vmax = max(density1.max(), density2.max())
+    vmax = diff.max()
     vmin = 0
     if mode == "both":
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))

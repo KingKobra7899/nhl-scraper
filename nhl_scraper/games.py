@@ -7,7 +7,9 @@ from typing import List
 from tqdm import tqdm
 import joblib
 import warnings
-
+import sys
+import traceback
+import time
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
@@ -34,8 +36,24 @@ def getPbpData(gameid):
     """
 
     url = f"https://api-web.nhle.com/v1/gamecenter/{gameid}/play-by-play"
-    response = requests.get(url)
-    data = response.json()
+    r = requests.get(url)
+    try:
+        data = r.json()
+    except:
+        retry_after = r.headers.get('Retry-After')
+        if retry_after:
+            wait_time = int(retry_after)
+            print(f"Rate limited. Waiting {wait_time} seconds...")
+            time.sleep(wait_time)
+            # Retry the request
+            r = requests.get(url)  # Replace with your actual request
+            data = r.json()
+        else:
+            
+            print("Rate limited but no Retry-After header. Waiting 60 seconds...")
+            time.sleep(60)
+            r = requests.get(url)
+            data = r.json()
 
     venue = data["venue"]["default"]
     home = data["homeTeam"]["id"]
@@ -567,7 +585,23 @@ def getPlayerPuckPossession(
 def generateGameShifts(gameId):
     url = f"https://api.nhle.com/stats/rest/en/shiftcharts?cayenneExp=gameId={gameId}"
     r = requests.get(url)
-    df = pd.DataFrame(r.json()["data"])
+    try:
+        df = pd.DataFrame(r.json()["data"])
+    except:
+        retry_after = r.headers.get('Retry-After')
+        if retry_after:
+            wait_time = int(retry_after)
+            print(f"Rate limited. Waiting {wait_time} seconds...")
+            time.sleep(wait_time)
+            # Retry the request
+            r = requests.get(url)  # Replace with your actual request
+            df = pd.DataFrame(r.json()["data"])
+        else:
+            
+            print("Rate limited but no Retry-After header. Waiting 60 seconds...")
+            time.sleep(60)
+            r = requests.get(url)
+            df = pd.DataFrame(r.json()["data"])
     df = df[df["detailCode"] == 0]
 
     df["startTime"] = df.startTime.apply(str_to_float) + (df.period - 1) * 20
@@ -616,10 +650,26 @@ def get_sit(code, is_home):
 
 
 def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
-    url = f"https://api-web.nhle.com/v1/gamecenter/{gameId}/boxscore"
+    url = f"https://api-web.nhle.com/v1/gamecenter/{str(gameId)}/boxscore"
     r = requests.get(url)
 
-    data = r.json()
+    try:
+        data = r.json()
+    except:
+        retry_after = r.headers.get('Retry-After')
+        if retry_after:
+            wait_time = int(retry_after)
+            print(f"Rate limited. Waiting {wait_time} seconds...")
+            time.sleep(wait_time)
+            # Retry the request
+            r = requests.get(url)  # Replace with your actual request
+            data = r.json()
+        else:
+            
+            print("Rate limited but no Retry-After header. Waiting 60 seconds...")
+            time.sleep(60)
+            r = requests.get(url)
+            data = r.json()
 
     players_stats = data["playerByGameStats"]
     home_team_id = int(getPbpData(gameId).get("homeTeamId", 0))
@@ -1232,6 +1282,15 @@ def getGamesBoxscore(games: list[str]) -> dict[str, pd.DataFrame]:
             shots = pd.concat([shots, result["shots"]])
             boxscore = pd.concat([boxscore, result["boxscore"]])
         except Exception as e:
-            print(f"Failed for game: {game}, {e}")
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            
+            print(f"Exception Type: {exc_type.__name__}")
+            print(f"Exception Value: {exc_value}")
+
+            tb_list = traceback.format_tb(exc_traceback)
+            print("Exception Traceback:")
+            for line in tb_list:
+                print(line, end="")
+            
 
     return {"stints": stints, "shots": shots, "boxscore": boxscore}

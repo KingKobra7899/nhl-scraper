@@ -38,29 +38,60 @@ def _(bs, data_2025, stints):
 
 
 @app.cell
-def _(
-    bs_2023,
-    bs_2024,
-    bs_2025,
-    calculate_rapm,
-    stints_2023,
-    stints_2024,
-    stints_2025,
-):
+def _(bs_2023):
+    bs_2023
+    return
+
+
+@app.cell
+def _(bs_2024):
+    import seaborn as sns
+    from sklearn.linear_model import LinearRegression
+    import matplotlib.pyplot as plt
+    xg_2023 = bs_2024.groupby(['playerId', 'name', 'situation', 'position']).agg({'xgf':'sum', 'total_toi':'sum', 'xG':sum, 'a1':sum, 'a2':sum}).reset_index()
+    xg_2023['xgf'] = 60 * (xg_2023['xgf'] / xg_2023['total_toi'])
+    xg_2023['xG'] = 60 * (xg_2023['xG'] / xg_2023['total_toi'])
+    xg_2023['a1'] = 60 * (xg_2023['a1'] / xg_2023['total_toi'])
+    xg_2023['a2'] = 60 * (xg_2023['a2'] / xg_2023['total_toi'])
+    xg_2023['a'] = xg_2023['a1'] + xg_2023['a2']
+    xg_2023 = xg_2023[xg_2023['total_toi'] >= 200]
+    xg_2023 = xg_2023[xg_2023['situation'] == 'ev']
+    xg_2023 = xg_2023[xg_2023['position'].isin(['C','R','L'])]
+    xg_2023['ixG_share'] = xg_2023['xG'] / xg_2023['xgf']
+    xg_2023['xG_team'] = xg_2023['xgf'] - xg_2023['xG']
+
+
+    model = LinearRegression().fit(xg_2023['a'].values.reshape(-1,1), xg_2023['xG_team'].values)
+    r2 = model.score(xg_2023['a'].values.reshape(-1,1), xg_2023['xG_team'].values)
+    sns.regplot(xg_2023, y='a', x='xG_team')
+    plt.text(0.05, 0.95, f"$R^2 = {r2:.3f}$",
+             transform=plt.gca().transAxes,
+             verticalalignment="top")
+    return
+
+
+@app.cell
+def _(stints_2023):
+    stints_2023['manpower'].unique()
+    return
+
+
+@app.cell
+def _(bs_2023, bs_2024, bs_2025, stints_2023, stints_2024, stints_2025):
     import nhl_scraper.model as m
 
     xgf_rapm_2023 = m.calculate_rapm(bs_2023, stints_2023, "xgf", "even")
-    xga_rapm_2023 = calculate_rapm(bs_2023, stints_2023, "xga", "even")
+    xga_rapm_2023 = m.calculate_rapm(bs_2023, stints_2023, "xga", "even")
     ppo_2023 = m.calculate_rapm(bs_2023, stints_2023, "xgf", "pp")
     pkd_2023 = m.calculate_rapm(bs_2023, stints_2023, "xga", "pk")
     print("2023-2024 complete")
     xgf_rapm_2024 = m.calculate_rapm(bs_2024, stints_2024, "xgf", "even")
-    xga_rapm_2024 = calculate_rapm(bs_2024, stints_2024, "xga", "even")
+    xga_rapm_2024 = m.calculate_rapm(bs_2024, stints_2024, "xga", "even")
     ppo_2024 = m.calculate_rapm(bs_2024, stints_2024, "xgf", "pp")
     pkd_2024 = m.calculate_rapm(bs_2024, stints_2024, "xga", "pk")
     print("2024-2025 complete")
     xgf_rapm_2025 = m.calculate_rapm(bs_2025, stints_2025, "xgf", "even")
-    xga_rapm_2025 = calculate_rapm(bs_2025, stints_2025, "xga", "even")
+    xga_rapm_2025 = m.calculate_rapm(bs_2025, stints_2025, "xga", "even")
     ppo_2025 = m.calculate_rapm(bs_2025, stints_2025, "xgf", "pp")
     pkd_2025 = m.calculate_rapm(bs_2025, stints_2025, "xga", "pk")
     print("2025-2026 complete")
