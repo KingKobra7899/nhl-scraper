@@ -18,7 +18,11 @@ def calculate_rapm(boxscore, df, metric, sit="even") -> pd.DataFrame:
         df = df[df["manpower"] == 'pk']
     y = df[metric] / (df["duration"] / 60)
     X = df.filter(regex=r"^(for|against)")
+    
     X["zone"] = df["zone"].copy()
+    X["team"] = df["teamId"].copy()
+    X["isHome"] = df["isHome"].copy()
+    X["duration"] = df["duration"].copy()
     
     X = X.fillna(0)
     X = pd.get_dummies(X, columns=["zone"])

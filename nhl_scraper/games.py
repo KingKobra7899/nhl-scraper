@@ -1215,7 +1215,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         )
 
         for _, pen in penalty_events.iterrows():
-            # Get the first non-penalty event that starts on or after the penalty time
+            
             next_ev = other_events[
                 other_events["timeInPeriod"] >= pen["timeInPeriod"]
             ].head(1)
@@ -1223,7 +1223,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
             if next_ev.empty or next_ev["situationCode"].iloc[0] is None:
                 continue
 
-            # Determine the *correct* manpower situation to propagate
+            
             is_home_view = stints_df["isHome"].iloc[0] == 1
 
             manpower_to_propagate = get_sit(
@@ -1252,14 +1252,15 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
         return stints_df
 
-    # Run the penalty update
+    
     home_stints = update_manpower_penalty_optimized(
         home_stints, penalty_events, all_events, home_team_id
     )
     away_stints = update_manpower_penalty_optimized(
         away_stints, penalty_events, all_events, home_team_id
     )
-
+    home_stints["teamId"] = home_team_id
+    away_stints["teamId"] = away_team_id
     return {
         "home_stints": home_stints,
         "away_stints": away_stints,
