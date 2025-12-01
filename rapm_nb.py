@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.18.0"
+__generated_with = "0.18.1"
 app = marimo.App()
 
 
@@ -21,171 +21,192 @@ def _():
     combined_rapm["even_xga_percentile"] = 1 - combined_rapm.groupby(["season", "position"])["even_xga"].rank(pct=True)
     combined_rapm["pp_xgf_percentile"] = combined_rapm.groupby(["season", "position"])["pp_xgf"].rank(pct=True)
     combined_rapm["pk_xga_percentile"] = 1 - combined_rapm.groupby(["season", "position"])["pk_xga"].rank(pct=True)
-    return (combined_rapm,)
+    return combined_rapm, pd
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(combined_rapm):
     # standard deployments
     even = 1000
     pp = 100
     pk = 100
 
-    even_rapm = (combined_rapm[\"even_xgf\"] - combined_rapm[\"even_xga\"]) * (even / 60)
-    pp_rapm = (combined_rapm[\"pp_xgf\"] * (pp / 60))
-    pk_rapm = -(combined_rapm[\"pk_xga\"] * (pk / 60))
+    even_rapm = (combined_rapm["even_xgf"] - combined_rapm["even_xga"]) * (even / 60)
+    pp_rapm = (combined_rapm["pp_xgf"] * (pp / 60))
+    pk_rapm = -(combined_rapm["pk_xga"] * (pk / 60))
 
     rapm = combined_rapm[['playerId', 'name', 'position', 'season']].copy()
-    rapm['rapm'] = even_rapm + pp_rapm pk_rapm
+    rapm['rapm'] = even_rapm + pp_rapm + pk_rapm
     rapm['evo'] = combined_rapm['even_xgf_percentile'] 
     rapm['evd'] = combined_rapm['even_xga_percentile']
     rapm['ppo'] = combined_rapm['pp_xgf_percentile']
     rapm['pkd'] = combined_rapm['pk_xga_percentile']
-    rapm[\"rapm_rank\"] = rapm.groupby([\"season\", \"position\"])[\"rapm\"].rank(pct=True)
-    """,
-    name="_"
-)
+    rapm["rapm_rank"] = rapm.groupby(["season", "position"])["rapm"].rank(pct=True)
+    return even, pk, pp
 
 
 @app.cell
-def _(rapm):
+def _(combined_rapm, pd):
+    import joblib
+    boxscore = pd.concat([joblib.load("boxscore.pkl")['boxscore'], joblib.load("boxscore_2025.pkl")['boxscore']])
+
+    boxscore["season"] = boxscore["game"].apply(lambda x: str(x)[0:4])
+    boxscore["gp"] = 1
+    player_stats = boxscore.groupby(['playerId', 'name', "position", 'season', 'situation'])[['goals', 'a1', 'a2', 'fenwick', 'sog', 'total_toi', 'penalties_drawn', 'penalties_taken', 'xG', 'xgf', "gp"]].sum().reset_index()
+    player_stats["xG_team"] = player_stats['xgf'] - player_stats['xG']
+    player_stats["assists"] = player_stats['a1'] + player_stats['a2']
+
+    stats = ['goals', 'a1', 'a2', 'fenwick', 'sog', 'penalties_drawn', 'penalties_taken', 'xG', 'xgf', "assists", "xG_team"]
+
+    player_stats[stats] = 60 * player_stats[stats].div(player_stats['total_toi'], axis=0)
+
+    special_toi = 20  
+    ev_toi    = 100   
+
+    player_stats = player_stats[
+        (
+            player_stats["situation"].isin(["pp", "pk"])
+            & (player_stats["total_toi"] >= special_toi)
+        )
+        |
+        (
+           (player_stats["situation"] == "ev")
+            & (player_stats["total_toi"] >= ev_toi)
+        )
+    ]
+    combined_rapm['playerId'] = combined_rapm['playerId'].apply(lambda x: int(x))
+    player_stats['playerId'] = player_stats['playerId'].apply(lambda x: int(x))
+
+    combined_rapm['season'] = combined_rapm['season'].apply(lambda x: int(x))
+    player_stats['season'] = player_stats['season'].apply(lambda x: int(x))
+
+    player_stats = player_stats.merge(combined_rapm, on=['name', 'playerId', 'position', 'season'])
+    player_stats = player_stats.drop_duplicates(subset=['playerId', 'situation', 'season'])
+    return (player_stats,)
+
+
+@app.cell
+def _(pd, player_stats):
     import seaborn as sns
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
-    import numpy as np
-    import nhl_scraper.player as p
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
-    import numpy as np
+    from sklearn.linear_model import LinearRegression
+    x = pd.get_dummies(player_stats[["even_xgf", "xgf", "position"]],  columns=["position"])
+    y = player_stats["assists"]
+    model = LinearRegression()
+    model.fit(x, y)
+    player_stats["playmaking"] = player_stats["assists"] + model.predict(x)
 
-    def plot_player_rapm(player_name, cmap=None):
-        player_data = rapm[rapm['name'] == player_name]
-        if player_data.empty:
-            player_data = rapm[rapm['playerId'] == player_name]
-            player_name = p.get_player_name(player_name)
-        if player_data.empty:
-            print("Player not found.")
-            return
+    player_stats["playmaking_norm"] = (
+        player_stats["playmaking"] -
+        player_stats.groupby("situation")["playmaking"].transform("mean")
+    ) / player_stats.groupby("situation")["playmaking"].transform("std", ddof=0)
 
-        plt.figure(figsize=(10, 6))
+    player_stats["finishing"] = player_stats["goals"] / player_stats["xG"]
+    player_stats["pen_diff"] = player_stats["penalties_drawn"] - player_stats["penalties_taken"]
+    already_split = [
+        'even_xgf', 'even_xga',
+        'pp_xgf', 'pk_xga',
+        "gp"
+    ]
 
-        metrics = {
-            'rapm_rank': 'Overall RAPM',
-            'evo': 'Even Strength Offense',
-            'evd': 'Even Strength Defense',
-            'ppo': 'Power Play Offense',
-            'pkd': 'Penalty Kill Defense'
-        }
 
-        # Default simple color cycle
-        color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        color_iter = iter(color_cycle)
+    id_cols = ['playerId', 'name', 'position', 'season', 'situation']
 
-        # === DRAW LINES ===
-        for col, label in metrics.items():
-            df = player_data.sort_values('season')
-            alpha = 1 if col == "rapm_rank" else 0.5
-            zorder = 2 if col == "rapm_rank" else 1
+    cols = ["finishing", "assists", "penalties_taken", "penalties_drawn", "pen_diff", 'total_toi']
 
-            color = next(color_iter)
+    pivot_other = (
+        player_stats.pivot_table(
+            index=['playerId', 'name', 'position', 'season'],
+            columns='situation',
+            values=cols,
+            aggfunc='first'
+        )
+    )
 
-            solid_df = df[df['season'] < 2025]
-            if len(solid_df) >= 2:
-                plt.plot(
-                    solid_df['season'], solid_df[col],
-                    marker='o', linewidth=3, alpha=alpha,
-                    zorder=zorder, label=label, color=color
-                )
-            elif len(solid_df) == 1:
-                plt.plot(
-                    solid_df['season'], solid_df[col],
-                    marker='o', color=color
-                )
 
-            # dotted projected segment
-            if 2025 in df['season'].values:
-                seg = df[df['season'].isin([df['season'].max() - 1, 2025])]
-                if len(seg) == 2:
-                    plt.plot(
-                        seg['season'], seg[col],
-                        marker='o', linestyle=':',
-                        linewidth=3, alpha=alpha,
-                        zorder=zorder, color=color
-                    )
+    pivot_other.columns = [f"{col}_{sit}" for col, sit in pivot_other.columns]
 
-        seasons = sorted(player_data['season'].unique())
-        n_metrics = len(metrics)
+    pivot_other = pivot_other.reset_index()
 
-        # === TILE PANEL BELOW AXIS ===
-        ax = plt.gca()
-        ax.set_ylim(-0.05, 1.05)
 
-        # Reserve extra vertical space
-        pad_height = 0.12 + n_metrics * 0.06
-        ax.set_ylim(-pad_height, 1.05)
+    collapsed_split = (
+        player_stats.groupby(['playerId', 'name', 'position', 'season'], as_index=False)[already_split]
+          .agg(lambda x: x.dropna().iloc[0] if x.dropna().size else None)
+    )
 
-        tile_height = 0.05
-        base_y = -0.16 
 
-        # Pick colormap or fallback to uniform tiles
-        if cmap is not None:
-            cmap_obj = plt.get_cmap(cmap)
-        else:
-            cmap_obj = None
+    combined = collapsed_split.merge(pivot_other, on=['playerId', 'name', 'position', 'season'])
 
-        for r, (col, _) in enumerate(metrics.items()):
-            for s in seasons:
-                val = player_data[player_data['season'] == s][col].iloc[0]
-
-                if cmap_obj:
-                    color = cmap_obj(val)
-                    # choose readable text color
-                    brightness = mcolors.rgb_to_hsv(color[:3])[2]
-                    text_color = "black" if brightness > 0.55 else "white"
-                else:
-                    # no color-coding
-                    color = "lightgray"
-                    text_color = "black"
-
-                rect = plt.Rectangle(
-                    (s - 0.2, base_y - r*tile_height),
-                    0.4, tile_height*0.9,
-                    color=color, clip_on=False, zorder=500
-                )
-                ax.add_patch(rect)
-
-                ax.text(
-                    s, base_y - r*tile_height + tile_height*0.45,
-                    f"{int(val*100)}%",
-                    ha="center", va="center",
-                    fontsize=10, color=text_color,
-                    zorder=600
-                )
-
-        ax.set_title(f'RAPM Over Seasons for {player_name}')
-        ax.set_xlabel('Season')
-        ax.set_ylabel('Percentile Rank')
-        ax.set_xticks(seasons)
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-        ax.legend(loc='upper left')
-        plt.ylim(-0.05, 1.05)
-        plt.tight_layout()
-        plt.show()
-
-    return plot_player_rapm, sns
+    id_cols.remove("situation")
+    combined = combined[id_cols +  already_split + ["finishing_ev", "pen_diff_ev", "finishing_pp", "assists_ev", "assists_pp", 'total_toi_ev', 'total_toi_pk',
+           'total_toi_pp']]
+    print(combined.columns)
+    return LinearRegression, combined, id_cols
 
 
 @app.cell
-def _(plot_player_rapm):
-    plot_player_rapm("Lane Hutson", cmap="coolwarm_r")
+def _(LinearRegression, combined, even, pd, pk, pp):
+    from sklearn.preprocessing import PolynomialFeatures
+    import numpy as np
+    poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+
+    data = combined[combined.total_toi_ev >= 300]
+    ev_x = pd.get_dummies(data[["even_xgf", "total_toi_ev", "position"]], columns=["position"])
+    ev_x = poly.fit_transform(ev_x)
+    ev_model = LinearRegression()
+    ev_model.fit(ev_x, data["assists_ev"].values)
+
+    combined["pmaking_ev"] = (5 * (ev_model.predict(poly.fit_transform(pd.get_dummies(combined[["even_xgf", "total_toi_ev", "position"]], columns=["position"]))) ) + 1 * (combined["assists_ev"])) / 6
+
+
+
+    data = combined[combined.total_toi_pp >= 50]
+    data = data.dropna(subset=["pp_xgf", "total_toi_pp", "position","assists_pp"])
+    ev_x = pd.get_dummies(data[["pp_xgf", "total_toi_pp", "position"]], columns=["position"])
+
+
+
+    ev_x = poly.fit_transform(ev_x)
+    ev_model = LinearRegression()
+    ev_model.fit(ev_x, data["assists_pp"].values)
+
+    X = pd.get_dummies(
+        combined[["even_xgf", "total_toi_pp", "position"]],
+        columns=["position"]
+    )
+
+    nan_mask = X.isna().any(axis=1) | combined["assists_pp"].isna()
+
+    pmaking_pp = pd.Series(np.nan, index=combined.index)
+
+    valid_idx = ~nan_mask
+    if valid_idx.any():
+        X_valid = X.loc[valid_idx]
+        pred_valid = ev_model.predict(poly.fit_transform(X_valid))
+        pmaking_pp.loc[valid_idx] = (5 * pred_valid + combined.loc[valid_idx, "assists_pp"]) / 6
+
+    combined["pmaking_pp"] = pmaking_pp
+
+    combined["even_ovr"] = combined["even_xgf"] - combined["even_xga"]
+
+    combined["off"] = even*combined["even_xgf"] + pp*combined["pp_xgf"]
+    combined["def"] = even*combined["even_xga"] + pk*combined["pk_xga"]
+
+    combined["ovr"] = combined["off"] - combined["def"]
     return
 
 
 @app.cell
-def _(combined_rapm, sns):
-    sns.histplot(combined_rapm, x="pk_xga")
+def _(combined, id_cols):
+    rank_df = combined[id_cols + ["gp", "total_toi_ev", "total_toi_pp", "total_toi_pk"]].copy()
+    rank_df["even_xgf"] = combined.groupby(["season", "position"])["even_xgf"].rank(pct=True)
+    rank_df["even_xga"] = 1-combined.groupby(["season", "position"])["even_xga"].rank(pct=True)
+    rank_df["even_ovr"] = combined.groupby(["season", "position"])["even_ovr"].rank(pct=True)
+
+    rank_df["off"] = combined.groupby(["season", "position"])["off"].rank(pct=True)
+    rank_df["def"] = 1-combined.groupby(["season", "position"])["def"].rank(pct=True)
+    rank_df["ovr"] = combined.groupby(["season", "position"])["ovr"].rank(pct=True)
+
+    rank_df
     return
 
 

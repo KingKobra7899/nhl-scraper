@@ -9,14 +9,15 @@ import seaborn as sns
 
 
 def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
-    df: pd.DataFrame = ga.getPbpData(game_id)["shots"]
+    game = ga.getPbpData(game_id)
+    df: pd.DataFrame = game["shots"]
     
     teams = df["teamId"].unique()
-    team1_df = df[df["teamId"] == teams[0]]
-    team2_df = df[df["teamId"] == teams[1]]
+    team1_df = df[df["teamId"] == game['homeTeamId']]
+    team2_df = df[df["teamId"] == game['awayTeamId']]
     # Get team names
-    team1_name, team1_tricode = ga.getTeamName(teams[0])
-    team2_name, team2_tricode = ga.getTeamName(teams[1])
+    team1_name, team1_tricode = ga.getTeamName(game['homeTeamId'])
+    team2_name, team2_tricode = ga.getTeamName(game['awayTeamId'])
     xmin, xmax = 0, 100
     ymin, ymax = -44.5, 44.5
     if not xG:
@@ -52,7 +53,7 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
     density1 = gaussian_filter(H1.T, sigma=sigma * 3)
     density2 = gaussian_filter(H2.T, sigma=sigma * 3)
     diff = density1 - density2
-    vmax = diff.max()
+    vmax = max(density1.max(), density2.max())
     vmin = 0
     if mode == "both":
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
@@ -142,8 +143,8 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
             extent=[xmin, xmax, ymin, ymax],
             origin="lower",
             cmap="RdBu",
-            vmin=-diff.max(),
-            vmax=diff.max(),
+            vmin=-abs(diff).max(),
+            vmax=abs(diff).max(),
         )
 
         total = diff.sum()
@@ -156,7 +157,7 @@ def plot_game_shot_density(game_id, mode="both", sigma=5, xG=False):
         )
 
         # team1 should be entry 0, team2 entry 1
-        df["teamIndex"] = df["teamId"].apply(lambda tid: 0 if tid == teams[0] else 1)
+        df["teamIndex"] = df["teamId"].apply(lambda tid: 0 if tid == game["homeTeamId"] else 1)
         goals = df[df["typeDescKey"] == "goal"]
         ga.draw_rink_features(
             ax, xmin, xmax, ymin, ymax, color="black", alpha=0.5, linewidth=1.5
@@ -360,39 +361,65 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
     plt.show()
 
 
-def plot_rapm(df, players, x, y, xlabel, ylabel, title):
+def plot_rapm(
+    df, players, x, y, xlabel, ylabel, title,
+    y_reverse=True, situation=["ev", "pp", "pk"], season=None
+):
     sns.set_style("ticks")
     df = df.copy()
-    df["highlight"] = df["playerId"].isin(players)
+    
+    if "situation" in df.columns:
+        df = df[df["situation"].isin(situation)]
+    if season and "season" in df.columns:
+        df = df[df["season"] == season]
 
-    g = sns.jointplot(
-        data=df, x=x, y=y, height=6, s=30, alpha=0.25, color="#505A5B", edgecolor=None
+    df["highlight"] = df["playerId"].isin(players)
+    highlight = df[df["highlight"]].drop_duplicates(subset="playerId")
+
+    g = sns.JointGrid(data=df, x=x, y=y, height=6)
+
+    # main scatter
+    g.ax_joint.scatter(
+        df[x], df[y], s=30, alpha=0.25, color="#505A5B", edgecolor=None, zorder=1
     )
 
-    ax = g.ax_joint
+    # highlight scatter
+    g.ax_joint.scatter(
+        highlight[x], highlight[y], s=40, color="#6CCFF6", zorder=10
+    )
 
-    ax.axhline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7, zorder=1)
-    ax.axvline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7, zorder=1)
+    # horizontal and vertical zero lines
+    g.ax_joint.axhline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7)
+    g.ax_joint.axvline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7)
 
-    highlight = df[df["playerId"].isin(players)]
-    highlight = highlight.drop_duplicates(subset="playerId")
-    ax.scatter(highlight[x], highlight[y], s=40, color="#6CCFF6", zorder=100)
+    # marginal KDEs
+    sns.kdeplot(data=df, x=x, ax=g.ax_marg_x, fill=True, linewidth=1, color="#505A5B")
+    sns.kdeplot(data=df, y=y, ax=g.ax_marg_y, fill=True, linewidth=1, color="#505A5B")
 
+    # rug for highlighted players only
+    sns.rugplot(data=highlight, x=x, ax=g.ax_marg_x, height=0.15, color="#6CCFF6", clip_on=True)
+    sns.rugplot(data=highlight, y=y, ax=g.ax_marg_y, height=0.15, color="#6CCFF6", clip_on=True)
+
+    # label highlighted points
     texts = []
     for _, row in highlight.iterrows():
-        t = ax.text(s=row["name"], x=row[x], y=row[y], fontsize=8, zorder=101)
+        t = g.ax_joint.text(
+            row[x], row[y], row["name"], fontsize=8, zorder=15
+        )
         texts.append(t)
 
     adjust_text(
         texts,
         expand_points=(1, 1),
         arrowprops=dict(arrowstyle="-", color="black", lw=1),
-        ax=ax,
+        ax=g.ax_joint,
     )
 
-    ax.invert_yaxis()
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    g.fig.suptitle(title)
-    g.fig.tight_layout()
+    if y_reverse:
+        g.ax_joint.invert_yaxis()
+
+    g.ax_joint.set_xlabel(xlabel)
+    g.ax_joint.set_ylabel(ylabel)
+    g.figure.suptitle(title)
+    g.figure.tight_layout()
     plt.show()
