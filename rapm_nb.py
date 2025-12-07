@@ -237,7 +237,7 @@ def _(rank_df):
 
 @app.cell
 def _(combined, sns):
-    sns.jointplot(combined, x="total_toi_pk", y="pk_xga", hue="teamId")
+    sns.jointplot(combined, x="total_toi_pk", y="pk_xga",kind="hex")
     return
 
 

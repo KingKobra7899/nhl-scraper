@@ -1215,7 +1215,7 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
         )
 
         for _, pen in penalty_events.iterrows():
-            
+            # Get the first non-penalty event that starts on or after the penalty time
             next_ev = other_events[
                 other_events["timeInPeriod"] >= pen["timeInPeriod"]
             ].head(1)
@@ -1272,26 +1272,24 @@ def getBoxScore(gameId) -> dict[str, pd.DataFrame]:
 
 
 def getGamesBoxscore(games: list[str]) -> dict[str, pd.DataFrame]:
-    stints = pd.DataFrame()
-    shots = pd.DataFrame()
-    boxscore = pd.DataFrame()
+    stints_list = []
+    shots_list = []
+    boxscore_list = []
 
     for game in tqdm(games):
         try:
             result = getBoxScore(game)
-            stints = pd.concat([stints, result["home_stints"], result["away_stints"]])
-            shots = pd.concat([shots, result["shots"]])
-            boxscore = pd.concat([boxscore, result["boxscore"]])
+            stints_list.append(result["home_stints"])
+            stints_list.append(result["away_stints"])
+            shots_list.append(result["shots"])
+            boxscore_list.append(result["boxscore"])
         except Exception as e:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
+            print(f"Error processing game {game}: {e}")
             
-            print(f"Exception Type: {exc_type.__name__}")
-            print(f"Exception Value: {exc_value}")
+    stints = pd.concat(stints_list, ignore_index=True)
+    shots = pd.concat(shots_list, ignore_index=True)
+    boxscore = pd.concat(boxscore_list, ignore_index=True)
 
-            tb_list = traceback.format_tb(exc_traceback)
-            print("Exception Traceback:")
-            for line in tb_list:
-                print(line, end="")
             
 
     return {"stints": stints, "shots": shots, "boxscore": boxscore}

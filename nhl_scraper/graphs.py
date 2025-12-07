@@ -360,14 +360,11 @@ def plot_team_shot_density(df, id, gp, mode="both", sigma=5, xG=False, heightmap
     plt.tight_layout()
     plt.show()
 
-
-def plot_rapm(
-    df, players, x, y, xlabel, ylabel, title,
-    y_reverse=True, situation=["ev", "pp", "pk"], season=None
-):
-    sns.set_style("ticks")
+def plot_rapm(df, players, x, y, xlabel, ylabel, title,
+              y_reverse=True, situation=["ev", "pp", "pk"],
+              season=None, line_x=0, line_y=0, ax=None):
     df = df.copy()
-    
+
     if "situation" in df.columns:
         df = df[df["situation"].isin(situation)]
     if season and "season" in df.columns:
@@ -376,50 +373,35 @@ def plot_rapm(
     df["highlight"] = df["playerId"].isin(players)
     highlight = df[df["highlight"]].drop_duplicates(subset="playerId")
 
-    g = sns.JointGrid(data=df, x=x, y=y, height=6)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6))
+    else:
+        fig = ax.figure
 
-    # main scatter
-    g.ax_joint.scatter(
-        df[x], df[y], s=30, alpha=0.25, color="#505A5B", edgecolor=None, zorder=1
-    )
+    
+    ax.scatter(df[x], df[y], s=30, alpha=0.25, color="#505A5B", zorder=1)
 
-    # highlight scatter
-    g.ax_joint.scatter(
-        highlight[x], highlight[y], s=40, color="#6CCFF6", zorder=10
-    )
+    
+    ax.scatter(highlight[x], highlight[y], s=40, color="#6CCFF6", zorder=10)
 
-    # horizontal and vertical zero lines
-    g.ax_joint.axhline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7)
-    g.ax_joint.axvline(0, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7)
+    
+    ax.axhline(line_y, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7)
+    ax.axvline(line_x, color="#9e9e9e", linewidth=0.8, linestyle="--", alpha=0.7)
 
-    # marginal KDEs
-    sns.kdeplot(data=df, x=x, ax=g.ax_marg_x, fill=True, linewidth=1, color="#505A5B")
-    sns.kdeplot(data=df, y=y, ax=g.ax_marg_y, fill=True, linewidth=1, color="#505A5B")
-
-    # rug for highlighted players only
-    sns.rugplot(data=highlight, x=x, ax=g.ax_marg_x, height=0.15, color="#6CCFF6", clip_on=True)
-    sns.rugplot(data=highlight, y=y, ax=g.ax_marg_y, height=0.15, color="#6CCFF6", clip_on=True)
-
-    # label highlighted points
+    
     texts = []
     for _, row in highlight.iterrows():
-        t = g.ax_joint.text(
-            row[x], row[y], row["name"], fontsize=8, zorder=15
-        )
+        t = ax.text(row[x], row[y], row["name"], fontsize=8, zorder=15)
         texts.append(t)
 
-    adjust_text(
-        texts,
-        expand_points=(1, 1),
-        arrowprops=dict(arrowstyle="-", color="black", lw=1),
-        ax=g.ax_joint,
-    )
+    adjust_text(texts, expand_points=(1, 1),
+                arrowprops=dict(arrowstyle="-", color="black", lw=1), ax=ax)
 
     if y_reverse:
-        g.ax_joint.invert_yaxis()
+        ax.invert_yaxis()
 
-    g.ax_joint.set_xlabel(xlabel)
-    g.ax_joint.set_ylabel(ylabel)
-    g.figure.suptitle(title)
-    g.figure.tight_layout()
-    plt.show()
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
